@@ -304,6 +304,12 @@ export class AgTopbarDaemon {
           }, 250);
         }
       });
+      conn.watcher.on('error', () => {
+        if (conn.watcher) {
+          try { conn.watcher.close(); } catch {}
+          conn.watcher = null;
+        }
+      });
     } catch {}
   }
 

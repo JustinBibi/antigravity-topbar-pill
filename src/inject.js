@@ -3,6 +3,14 @@
 export const INJECTED_SCRIPT = `(() => {
   window.__AG_TOPBAR_ENABLED__ = true;
 
+  if (window.__AG_TOPBAR_INITIALIZED__) {
+    if (typeof window.__AG_TOPBAR_ATTACH__ === 'function') {
+      window.__AG_TOPBAR_ATTACH__();
+    }
+    return;
+  }
+  window.__AG_TOPBAR_INITIALIZED__ = true;
+
   if (window.__AG_TOPBAR_OBSERVER__) {
     try { window.__AG_TOPBAR_OBSERVER__.disconnect(); } catch {}
     window.__AG_TOPBAR_OBSERVER__ = null;
@@ -11,6 +19,7 @@ export const INJECTED_SCRIPT = `(() => {
   let hasReceivedData = false;
 
   let currentData = {
+    conversationId: null,
     percentStr: '0%',
     tokenStr: '0',
     dotColor: '#10b981',
@@ -105,7 +114,7 @@ export const INJECTED_SCRIPT = `(() => {
   }
 
   function escapeHtml(str) {
-    if (!str) return '';
+    if (str === null || str === undefined) return '';
     return String(str)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -142,14 +151,8 @@ export const INJECTED_SCRIPT = `(() => {
 
   function attachBadge() {
     if (!window.__AG_TOPBAR_ENABLED__ || !hasReceivedData) return false;
+    if (!currentData.conversationId) return false;
     ensureStyles();
-
-    // Check if badge already attached in DOM and visible
-    const existingBadge = document.getElementById('ag-topbar-token-badge');
-    if (existingBadge && existingBadge.parentElement && document.body.contains(existingBadge)) {
-      existingBadge.style.display = 'inline-flex';
-      return true;
-    }
 
     // Locate target toolbar container
     const toolbar = document.querySelector('[data-testid="pane-titlebar-toolbar"] > div') ||
@@ -157,6 +160,17 @@ export const INJECTED_SCRIPT = `(() => {
                     document.querySelector('[class*="titlebar"]');
 
     if (!toolbar) return false;
+
+    // Check if badge already attached in this toolbar and in DOM
+    const existingBadge = document.getElementById('ag-topbar-token-badge');
+    if (existingBadge && existingBadge.parentElement === toolbar && document.body.contains(existingBadge)) {
+      existingBadge.style.display = 'inline-flex';
+      return true;
+    }
+
+    if (existingBadge) {
+      try { existingBadge.remove(); } catch {}
+    }
 
     const badge = document.createElement('div');
     badge.id = 'ag-topbar-token-badge';
@@ -193,7 +207,16 @@ export const INJECTED_SCRIPT = `(() => {
     if (!window.__AG_TOPBAR_ENABLED__) return;
     hasReceivedData = true;
     currentData = Object.assign(currentData, data);
+
+    const badge = document.getElementById('ag-topbar-token-badge');
+    if (!currentData.conversationId) {
+      if (badge) badge.style.display = 'none';
+      return;
+    }
+
     attachBadge();
+    const activeBadge = document.getElementById('ag-topbar-token-badge');
+    if (activeBadge) activeBadge.style.display = 'inline-flex';
 
     const dot = document.querySelector('#ag-topbar-token-badge .ag-dot');
     if (dot && currentData.dotColor) {
@@ -284,14 +307,29 @@ export const INJECTED_SCRIPT = `(() => {
     };
   };
 
+  // Listen to client-side route changes and notify daemon via CDP binding
+  const onRouteChanged = () => {
+    if (typeof window.__ag_topbar_nav__ === 'function') {
+      try { window.__ag_topbar_nav__(); } catch {}
+    }
+  };
+
+  const onWindowResize = () => {
+    const tooltip = document.getElementById('ag-topbar-tooltip');
+    if (tooltip) tooltip.style.display = 'none';
+  };
+
   window.__AG_TOPBAR_DETACH__ = () => {
     window.__AG_TOPBAR_ENABLED__ = false;
+    window.__AG_TOPBAR_INITIALIZED__ = false;
     hasReceivedData = false;
     if (attachTimer) clearTimeout(attachTimer);
     if (window.__AG_TOPBAR_OBSERVER__) {
-      window.__AG_TOPBAR_OBSERVER__.disconnect();
+      try { window.__AG_TOPBAR_OBSERVER__.disconnect(); } catch {}
       window.__AG_TOPBAR_OBSERVER__ = null;
     }
+    window.removeEventListener('popstate', onRouteChanged);
+    window.removeEventListener('resize', onWindowResize);
     const badge = document.getElementById('ag-topbar-token-badge');
     if (badge) badge.remove();
     const tooltip = document.getElementById('ag-topbar-tooltip');
@@ -303,7 +341,7 @@ export const INJECTED_SCRIPT = `(() => {
   // Watch for DOM mutations to re-attach if toolbar unmounts/remounts
   let attachTimer = null;
   const observer = new MutationObserver(() => {
-    if (!window.__AG_TOPBAR_ENABLED__ || !hasReceivedData) return;
+    if (!window.__AG_TOPBAR_ENABLED__ || !hasReceivedData || !currentData.conversationId) return;
     if (!document.getElementById('ag-topbar-token-badge')) {
       if (attachTimer) clearTimeout(attachTimer);
       attachTimer = setTimeout(attachBadge, 100);
@@ -317,14 +355,9 @@ export const INJECTED_SCRIPT = `(() => {
 
   window.__AG_TOPBAR_OBSERVER__ = observer;
 
-  // Listen to client-side route changes and notify daemon via CDP binding
-  const onRouteChanged = () => {
-    if (typeof window.__ag_topbar_nav__ === 'function') {
-      try { window.__ag_topbar_nav__(); } catch {}
-    }
-  };
-
   window.addEventListener('popstate', onRouteChanged);
+  window.addEventListener('resize', onWindowResize);
+
   if (!window.__AG_TOPBAR_PUSH_HOOKED__) {
     window.__AG_TOPBAR_PUSH_HOOKED__ = true;
     const origPush = history.pushState;
@@ -340,11 +373,5 @@ export const INJECTED_SCRIPT = `(() => {
       return ret;
     };
   }
-
-  // Hide tooltip on window resize
-  window.addEventListener('resize', () => {
-    const tooltip = document.getElementById('ag-topbar-tooltip');
-    if (tooltip) tooltip.style.display = 'none';
-  });
 })();
 `;

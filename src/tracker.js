@@ -10,7 +10,7 @@ const ANTIGRAVITY_BASE = path.join(os.homedir(), '.gemini', 'antigravity');
  * @returns {number}
  */
 export function getModelContextLimit(modelName = '') {
-  const m = String(modelName).toLowerCase();
+  const m = String(modelName || '').toLowerCase();
   if (m.includes('claude')) return 200_000;
   if (m.includes('pro') && m.includes('gemini')) return 2_000_000;
   if (m.includes('gemini') || m.includes('flash')) return 1_000_000;
@@ -18,6 +18,8 @@ export function getModelContextLimit(modelName = '') {
   if (m.includes('o1') || m.includes('o3')) return 200_000;
   if (m.includes('deepseek')) return 128_000;
   if (m.includes('qwen') || m.includes('llama')) return 128_000;
+  if (m.includes('mistral') || m.includes('codestral')) return 128_000;
+  if (m.includes('grok')) return 128_000;
   return 1_000_000;
 }
 
@@ -27,7 +29,7 @@ export function getModelContextLimit(modelName = '') {
  * @returns {string}
  */
 export function formatTokenCount(count = 0) {
-  if (typeof count !== 'number' || isNaN(count) || count <= 0) return '0';
+  if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) return '0';
   if (count >= 999_500) {
     const m = count / 1_000_000;
     const str = m >= 9.95 ? String(Math.round(m)) : m.toFixed(1);
@@ -36,7 +38,7 @@ export function formatTokenCount(count = 0) {
   if (count >= 1_000) {
     return Math.round(count / 1_000) + 'K';
   }
-  return String(count);
+  return String(Math.round(count));
 }
 
 /**
@@ -98,6 +100,7 @@ export function readTokensFromLogPath(filePath, maxScanBytes = 5 * 1024 * 1024) 
       for (let i = lines.length - 1; i >= 0; i--) {
         const line = lines[i].trim();
         if (!line) continue;
+        if (!line.includes('tokens') && !line.includes('Tokens') && !line.includes('usage')) continue;
         const tokens = parseTokenLine(line);
         if (tokens) return tokens;
       }
@@ -127,6 +130,20 @@ function parseTokenLine(line) {
         outputTokens: parsed.output_tokens || 0
       };
     }
+    if (parsed.usage && typeof parsed.usage.input_tokens === 'number') {
+      return {
+        inputTokens: parsed.usage.input_tokens || 0,
+        cachedTokens: parsed.usage.cache_read_tokens || parsed.usage.cache_read_input_tokens || 0,
+        outputTokens: parsed.usage.output_tokens || 0
+      };
+    }
+    if (typeof parsed.inputTokens === 'number') {
+      return {
+        inputTokens: parsed.inputTokens || 0,
+        cachedTokens: parsed.cachedTokens || parsed.cacheReadTokens || 0,
+        outputTokens: parsed.outputTokens || 0
+      };
+    }
   } catch {}
   return null;
 }
@@ -139,16 +156,18 @@ function parseTokenLine(line) {
  * @returns {object}
  */
 export function buildUsagePayload({ conversationId, modelName = 'Gemini 3.8 Flash' }) {
+  const model = modelName || 'Gemini 3.8 Flash';
   const tokens = readLastTokensFromTranscript(conversationId);
-  const limit = getModelContextLimit(modelName);
+  const limit = getModelContextLimit(model);
   const limitStr = formatTokenCount(limit);
 
   if (!tokens) {
     return {
+      conversationId: conversationId || null,
       percentStr: '0%',
       tokenStr: '0',
       dotColor: '#10b981',
-      model: modelName,
+      model,
       inputStr: '0',
       cachedStr: '0',
       outputStr: '0',
@@ -178,10 +197,11 @@ export function buildUsagePayload({ conversationId, modelName = 'Gemini 3.8 Flas
   }
 
   return {
+    conversationId: conversationId || null,
     percentStr,
     tokenStr,
     dotColor,
-    model: modelName,
+    model,
     inputStr: inputTokens.toLocaleString(),
     cachedStr: cachedTokens.toLocaleString(),
     outputStr: outputTokens.toLocaleString(),

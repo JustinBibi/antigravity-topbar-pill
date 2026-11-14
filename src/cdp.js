@@ -52,7 +52,7 @@ export async function getAntigravityPages(port) {
     return targets.filter(t => (
       t.type === 'page' &&
       !t.url.startsWith('data:') &&
-      (t.url.includes('127.0.0.1') || (t.title && t.title.includes('Antigravity')))
+      (t.url.includes('127.0.0.1') || t.url.includes('localhost') || (t.title && t.title.includes('Antigravity')))
     ));
   } catch {
     return [];
@@ -143,8 +143,11 @@ export class CdpClient {
     if (this.isClosed) return;
     this.isClosed = true;
 
-    for (const { reject } of this.callbacks.values()) {
-      reject(new Error('Connection closed'));
+    for (const { reject, timer } of this.callbacks.values()) {
+      if (timer) clearTimeout(timer);
+      try {
+        reject(new Error('Connection closed'));
+      } catch {}
     }
     this.callbacks.clear();
 
@@ -154,20 +157,45 @@ export class CdpClient {
   }
 
   /**
-   * Send a CDP command
+   * Send a CDP command with timeout protection
    * @param {string} method
    * @param {object} [params]
+   * @param {number} [timeoutMs=8000]
    * @returns {Promise<any>}
    */
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = 8000) {
     if (this.isClosed || !this.ws || this.ws.readyState !== 1) {
       return Promise.reject(new Error('WebSocket not connected'));
     }
 
     const id = this.msgId++;
     return new Promise((resolve, reject) => {
-      this.callbacks.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
+      const timer = setTimeout(() => {
+        if (this.callbacks.has(id)) {
+          this.callbacks.delete(id);
+          reject(new Error(`CDP command "${method}" timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+
+      this.callbacks.set(id, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+        timer
+      });
+
+      try {
+        this.ws.send(JSON.stringify({ id, method, params }));
+      } catch (err) {
+        clearTimeout(timer);
+        this.callbacks.delete(id);
+        reject(err);
+      }
     });
   }
 
@@ -184,10 +212,10 @@ export class CdpClient {
   }
 
   /**
-   * Close connection
+   * Close connection and reject pending callbacks
    */
   close() {
-    this.isClosed = true;
+    this.handleClose();
     if (this.ws) {
       try { this.ws.close(); } catch {}
     }

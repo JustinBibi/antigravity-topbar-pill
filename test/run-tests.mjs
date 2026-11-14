@@ -17,6 +17,9 @@ import { INJECTED_SCRIPT } from '../src/inject.js';
 import {
   generatePlistContent,
   getPlistPath,
+  installLaunchAgent,
+  uninstallLaunchAgent,
+  isLaunchAgentLoaded,
   LAUNCH_AGENT_LABEL
 } from '../src/launchagent.js';
 
@@ -38,6 +41,8 @@ async function runTests() {
   assert.strictEqual(getModelContextLimit('DeepSeek R1'), 128_000);
   assert.strictEqual(getModelContextLimit('Qwen 2.5 72B'), 128_000);
   assert.strictEqual(getModelContextLimit('Llama 3.3 70B'), 128_000);
+  assert.strictEqual(getModelContextLimit('Mistral Large'), 128_000);
+  assert.strictEqual(getModelContextLimit('Grok 2'), 128_000);
   assert.strictEqual(getModelContextLimit('custom-fine-tuned-model'), 1_000_000);
   console.log('✓ getModelContextLimit: multi-model limits verified');
 
@@ -46,7 +51,11 @@ async function runTests() {
   assert.strictEqual(formatTokenCount(-50), '0');
   assert.strictEqual(formatTokenCount(null), '0');
   assert.strictEqual(formatTokenCount(undefined), '0');
+  assert.strictEqual(formatTokenCount(Infinity), '0');
+  assert.strictEqual(formatTokenCount(-Infinity), '0');
+  assert.strictEqual(formatTokenCount(NaN), '0');
   assert.strictEqual(formatTokenCount(542), '542');
+  assert.strictEqual(formatTokenCount(542.4), '542');
   assert.strictEqual(formatTokenCount(1000), '1K');
   assert.strictEqual(formatTokenCount(37499), '37K');
   assert.strictEqual(formatTokenCount(106896), '107K');
@@ -80,7 +89,21 @@ async function runTests() {
     cachedTokens: 7500,
     outputTokens: 450
   });
-  console.log('✓ readTokensFromLogPath: large tool output (>100KB) scan verified');
+
+  // Alternative usage format
+  const sampleDataUsage = [
+    JSON.stringify({ step_index: 1, source: 'USER', content: 'hello' }),
+    JSON.stringify({ step_index: 2, source: 'MODEL', usage: { input_tokens: 1500, cache_read_tokens: 300, output_tokens: 80 } })
+  ].join('\n');
+  fs.writeFileSync(tmpLog, sampleDataUsage);
+  const parsedUsage = readTokensFromLogPath(tmpLog);
+  assert.deepStrictEqual(parsedUsage, {
+    inputTokens: 1500,
+    cachedTokens: 300,
+    outputTokens: 80
+  });
+
+  console.log('✓ readTokensFromLogPath: large tool output & alternate formats scan verified');
 
   // Cleanup tmp
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -95,6 +118,7 @@ async function runTests() {
       modelName: 'Gemini 3.8 Flash High'
     });
     console.log('  Live transcript sample payload:', realPayload);
+    assert.strictEqual(realPayload.conversationId, realConvId);
     assert(realPayload.tokenStr.endsWith('K') || realPayload.tokenStr.endsWith('M'));
     assert(realPayload.percentStr.endsWith('%'));
     console.log('✓ buildUsagePayload: real transcript integration verified');
@@ -127,6 +151,26 @@ async function runTests() {
   assert(plist.includes('<key>KeepAlive</key>\n    <true/>'), 'Contains KeepAlive');
   assert(plist.includes('<key>PATH</key>'), 'Preserves PATH environment variable');
   console.log('✓ generatePlistContent: valid XML structure verified');
+
+  if (process.platform === 'darwin') {
+    // Non-destructive install / uninstall test cycle
+    const wasLoaded = isLaunchAgentLoaded();
+    const res = installLaunchAgent({
+      nodePath: process.execPath,
+      scriptPath: path.join(__dirname, '..', 'index.js'),
+      workDir: path.join(__dirname, '..'),
+      logPath: path.join(__dirname, '..', 'daemon.log')
+    });
+    assert(res.loaded, 'LaunchAgent reported loaded');
+    assert(fs.existsSync(res.plistPath), 'Plist file created');
+    assert.strictEqual(isLaunchAgentLoaded(), true, 'LaunchAgent is loaded in launchctl');
+
+    const unRes = uninstallLaunchAgent();
+    assert(unRes.removed, 'LaunchAgent reported removed');
+    assert(!fs.existsSync(res.plistPath), 'Plist file unlinked');
+    assert.strictEqual(isLaunchAgentLoaded(), false, 'LaunchAgent unloaded from launchctl');
+    console.log('✓ installLaunchAgent & uninstallLaunchAgent: lifecycle verified');
+  }
 
   console.log('\n=== [3] Testing cdp.js functions ===');
 
@@ -181,8 +225,26 @@ async function runTests() {
   assert(state && typeof state === 'object', 'State object returned');
   console.log('  Page detected state:', { conversationId: state.conversationId, model: state.model });
 
-  // Push update
+  // Test 1: Update with NO conversationId should keep badge hidden
+  await client.send('Runtime.evaluate', {
+    expression: `window.__AG_TOPBAR_UPDATE__(${JSON.stringify({
+      conversationId: null,
+      percentStr: '0%',
+      tokenStr: '0'
+    })})`
+  });
+  const noConvVerify = await client.send('Runtime.evaluate', {
+    expression: `(() => {
+      const badge = document.getElementById('ag-topbar-token-badge');
+      return !badge || badge.style.display === 'none';
+    })()`,
+    returnByValue: true
+  });
+  assert.strictEqual(noConvVerify.result.value, true, 'Badge is hidden when no conversationId');
+
+  // Test 2: Push valid conversation update
   const testPayload = {
+    conversationId: state.conversationId || 'test-conv-123',
     percentStr: '12%',
     tokenStr: '120K',
     dotColor: '#10b981',

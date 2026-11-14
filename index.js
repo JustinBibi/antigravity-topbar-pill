@@ -73,6 +73,31 @@ async function removeBadgeFromWindow() {
   }
 }
 
+async function stopProcessByPid(pid) {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {}
+
+  let terminated = false;
+  for (let i = 0; i < 30; i++) {
+    if (!isProcessAlive(pid)) {
+      terminated = true;
+      break;
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+
+  if (!terminated) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {}
+  }
+
+  if (fs.existsSync(PID_FILE)) {
+    try { fs.unlinkSync(PID_FILE); } catch {}
+  }
+}
+
 async function handleStart() {
   const existingPid = getRunningPid();
   if (existingPid) {
@@ -107,28 +132,7 @@ async function handleStop() {
 
   if (pid) {
     console.log(`[ag-topbar] Stopping daemon (PID: ${pid})...`);
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {}
-
-    let terminated = false;
-    for (let i = 0; i < 30; i++) {
-      if (!isProcessAlive(pid)) {
-        terminated = true;
-        break;
-      }
-      await new Promise(r => setTimeout(r, 100));
-    }
-
-    if (!terminated) {
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {}
-    }
-
-    if (fs.existsSync(PID_FILE)) {
-      try { fs.unlinkSync(PID_FILE); } catch {}
-    }
+    await stopProcessByPid(pid);
   } else if (isLaunchAgentLoaded()) {
     console.log('[ag-topbar] Notice: Daemon is running via LaunchAgent.');
     console.log('[ag-topbar] To stop and remove the LaunchAgent service, run:');
@@ -159,6 +163,10 @@ async function handleStatus() {
   if (fs.existsSync(STATUS_FILE)) {
     try {
       const status = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'));
+      const lastUpdatedMs = status.updatedAt ? (Date.now() - new Date(status.updatedAt).getTime()) : Infinity;
+      if (lastUpdatedMs > 15000 && !launchAgentActive) {
+        console.log('[ag-topbar] Warning: Status file has not been updated recently.');
+      }
       console.log(`[ag-topbar] DevTools Port: ${status.port || 'Waiting for Antigravity...'}`);
       console.log(`[ag-topbar] Connected: ${status.connected ? 'YES' : 'NO'}`);
       console.log(`[ag-topbar] Uptime: ${status.uptimeSeconds || 0}s`);
@@ -200,14 +208,11 @@ async function handleRun(isInternalDaemon = false) {
 async function handleInstallDaemon() {
   console.log('[ag-topbar] Setting up macOS LaunchAgent...');
 
-  // Stop standalone daemon if running
+  // Stop standalone daemon synchronously if running
   const pid = getRunningPid();
   if (pid) {
     console.log(`[ag-topbar] Stopping existing standalone daemon (PID: ${pid})...`);
-    try { process.kill(pid, 'SIGTERM'); } catch {}
-    if (fs.existsSync(PID_FILE)) {
-      try { fs.unlinkSync(PID_FILE); } catch {}
-    }
+    await stopProcessByPid(pid);
   }
 
   try {
@@ -238,6 +243,11 @@ async function handleUninstallDaemon() {
       console.log(`[ag-topbar] LaunchAgent removed from: ${getPlistPath()}`);
     } else {
       console.log('[ag-topbar] LaunchAgent plist was not installed.');
+    }
+
+    const pid = getRunningPid();
+    if (pid) {
+      await stopProcessByPid(pid);
     }
 
     await removeBadgeFromWindow();
