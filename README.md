@@ -61,8 +61,14 @@
    - **路由感知**：会话路由切换 (SPA Route Change) 秒级响应，无需轮询。
    - **大文件韧性**：针对单步含超长工具返回内容（>150KB）的 transcript 日志进行高效倒序扫描，避免整文件重读。
 
-5. **macOS LaunchAgent 开机自启 (macOS LaunchAgent Support)**
-   - 内置生成标准 LaunchAgent plist，支持用户登录时自动常驻后台。
+5. **macOS 零占用瞬态唤醒与双模态混合架构 (Hybrid Lifecycle Architecture)**
+   - **macOS (优雅按需生命周期 - Option 2)**：
+     - 基于 launchd 的 `WatchPaths` 监听 `DevToolsActivePort` 端口凭据文件。
+     - **极客级 0 占用**：Antigravity 未运行时，Node 进程自动终止 (`KeepAlive: false`)，内存占用绝对为 **0 MB**，后台 **0 进程**。
+     - **随应用瞬态自启**：打开 Antigravity，launchd 捕捉文件生成毫秒级唤起守护进程。
+     - **刷新重载守卫 (Reload Guard)**：页面按 `Cmd+R` 时 WebSocket 断开，守护进程通过轮询 `/json/version` 端点检测 Antigravity 存活态（3~4 秒缓冲）。刷新不误杀，只有当应用彻底退出（端口 `ECONNREFUSED`）才安全退出。
+   - **Linux & Windows (轻量常驻守护进程 - Option 1)**：
+     - 保留经典的轻量持久化守护模型 (`node index.js start`)，适配不同平台的后台管理机制。
 
 ---
 
@@ -142,34 +148,40 @@ node index.js stop
 
 ---
 
-## 🖥️ 设为开机常驻服务 (macOS LaunchAgent)
+## 🖥️ 设为按需开机自启服务 (macOS LaunchAgent WatchPaths)
 
-如果您希望每次开机登录后自动后台启动，无需手动输入命令：
+在 macOS 上推荐配置为 launchd 智能按需服务：
+- **当 Antigravity 打开时**：launchd 监听到 `DevToolsActivePort` 写入，自动以 `--auto-exit` 唤醒守护进程并注入药丸。
+- **当用户刷新页面 (`Cmd+R`) 时**：重载守卫（Reload Guard）通过 CDP HTTP 端点探测，保持服务在线不中断。
+- **当 Antigravity 退出时**：守护进程安全解绑并自动退出，系统回归 **0 进程、0 内存** 状态。
 
-### 安装并启动 LaunchAgent
+### 安装 macOS LaunchAgent 按需服务
 ```bash
 node index.js install-daemon
 ```
-程序会在 `~/Library/LaunchAgents/com.justinbibi.antigravity-topbar.plist` 生成规范的服务配置并激活。
+程序会在 `~/Library/LaunchAgents/com.justinbibi.antigravity-topbar.plist` 生成包含 `WatchPaths`、`ThrottleInterval` 与 `KeepAlive: false` 的服务配置并即刻激活。
 
-### 卸载 LaunchAgent
+### 卸载 macOS LaunchAgent
 ```bash
 node index.js uninstall-daemon
 ```
+
+> **提示（Linux & Windows 用户）**：Linux 与 Windows 继续使用 Option 1 标准持久守护模式：使用 `node index.js start` 启动后台守护进程，`node index.js stop` 停止并清理。
 
 ---
 
 ## 🛠️ CLI 命令速查 / Commands
 
-| 命令 | 说明 |
-| :--- | :--- |
-| `node index.js start` | 在后台启动守护进程 |
-| `node index.js stop` | 停止后台守护进程并清理 UI 药丸 |
-| `node index.js status` | 检查守护进程状态、连接端口及各窗口会话 |
-| `node index.js run` | 在前台直接运行（输出详细调试日志，按 `Ctrl+C` 退出） |
-| `node index.js install-daemon` | 安装并激活 macOS LaunchAgent 开机自启服务 |
-| `node index.js uninstall-daemon` | 卸载 macOS LaunchAgent 服务并清理药丸 |
-| `npm test` | 执行全套自动化单元测试与 CDP 注入联调测试 |
+| 命令 | 说明 | 适用平台 |
+| :--- | :--- | :--- |
+| `node index.js start` | 在后台启动持久守护进程（Option 1） | Linux / Windows / macOS |
+| `node index.js stop` | 停止后台守护进程并清理所有窗口的 UI 药丸 | 全部平台 |
+| `node index.js status` | 检查守护进程状态、连接端口及各窗口会话 | 全部平台 |
+| `node index.js run` | 在前台直接运行（输出详细调试日志，按 `Ctrl+C` 退出） | 全部平台 |
+| `node index.js run --auto-exit` | 按需运行模式（Antigravity 退出时自动退出 Node 进程） | macOS LaunchAgent |
+| `node index.js install-daemon` | 安装并激活 macOS LaunchAgent `WatchPaths` 按需自启服务 | macOS |
+| `node index.js uninstall-daemon` | 卸载 macOS LaunchAgent 服务并清理药丸 | macOS |
+| `npm test` | 执行全套自动化单元测试、重载守卫与真实 CDP 联调测试 | 全部平台 |
 
 ---
 

@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { getActivePort, getAntigravityPages, CdpClient } from './cdp.js';
+import { getActivePort, getAntigravityPages, isCdpEndpointAlive, CdpClient } from './cdp.js';
 import { INJECTED_SCRIPT } from './inject.js';
 import { buildUsagePayload } from './tracker.js';
 
@@ -12,14 +12,27 @@ const DEFAULT_STATUS_FILE = path.join(__dirname, '..', 'status.json');
 const ANTIGRAVITY_BASE = path.join(os.homedir(), '.gemini', 'antigravity');
 
 export class AgTopbarDaemon {
-  constructor({ statusFile = DEFAULT_STATUS_FILE, log = console.log } = {}) {
+  constructor({
+    statusFile = DEFAULT_STATUS_FILE,
+    log = console.log,
+    autoExit = false,
+    reloadGuardRetries = 3,
+    reloadGuardIntervalMs = 1000,
+    onExit = null
+  } = {}) {
     this.statusFile = statusFile;
     this.log = log;
+    this.autoExit = autoExit;
+    this.reloadGuardRetries = reloadGuardRetries;
+    this.reloadGuardIntervalMs = reloadGuardIntervalMs;
+    this.onExit = onExit || ((code = 0) => process.exit(code));
     this.isRunning = false;
     this.activeConnections = new Map(); // targetId -> { client, watcher, lastConvId, scriptIdentifier }
     this.pollTimer = null;
     this.startTime = Date.now();
     this.lastPort = null;
+    this.isGuarding = false;
+    this.isExiting = false;
   }
 
   async start() {
@@ -74,19 +87,81 @@ export class AgTopbarDaemon {
     }
   }
 
+  async checkAndHandleAutoExit(portHint = null) {
+    if (!this.autoExit || !this.isRunning || this.isExiting || this.isGuarding) {
+      return;
+    }
+
+    if (this.activeConnections.size > 0) {
+      return;
+    }
+
+    this.isGuarding = true;
+    try {
+      const targetPort = portHint || this.lastPort || getActivePort();
+      this.log(`[ag-topbar] No active targets. Checking if Antigravity is reloading or quit (port: ${targetPort || 'none'})...`);
+
+      const isAlive = await this.verifyEndpointWithReloadGuard(targetPort);
+
+      if (!this.isRunning || this.isExiting) {
+        return;
+      }
+
+      if (this.activeConnections.size > 0) {
+        this.log('[ag-topbar] Active target reconnected during reload guard. Aborting exit.');
+        return;
+      }
+
+      if (isAlive) {
+        this.log('[ag-topbar] DevTools endpoint is responsive. Reload/navigation in progress, staying alive.');
+      } else {
+        this.log(`[ag-topbar] DevTools endpoint unreachable after ${this.reloadGuardRetries} retries (~3-4s). Antigravity has quit. Auto-exiting...`);
+        this.isExiting = true;
+        await this.stop();
+        this.onExit(0);
+      }
+    } finally {
+      this.isGuarding = false;
+    }
+  }
+
+  async verifyEndpointWithReloadGuard(targetPort) {
+    for (let i = 0; i <= this.reloadGuardRetries; i++) {
+      if (!this.isRunning || this.isExiting) return false;
+      if (this.activeConnections.size > 0) return true;
+
+      const currentPort = targetPort || getActivePort() || this.lastPort;
+      if (currentPort) {
+        const alive = await isCdpEndpointAlive(currentPort);
+        if (alive) {
+          this.lastPort = currentPort;
+          return true;
+        }
+      }
+
+      if (i < this.reloadGuardRetries) {
+        await new Promise(r => setTimeout(r, this.reloadGuardIntervalMs));
+      }
+    }
+    return false;
+  }
+
   async tick() {
     const port = getActivePort();
     if (!port) {
+      const portToCheck = this.lastPort;
       if (this.lastPort !== null) {
         // Port was present before, Antigravity likely closed
         await this.disconnectAll();
-        this.lastPort = null;
       }
       this.updateStatusFile({
         running: true,
         connected: false,
         message: 'Antigravity DevTools port not found (is Antigravity running?)'
       });
+      if (this.autoExit) {
+        await this.checkAndHandleAutoExit(portToCheck);
+      }
       return;
     }
 
@@ -105,6 +180,9 @@ export class AgTopbarDaemon {
         port,
         message: 'No active Antigravity pages found'
       });
+      if (this.autoExit) {
+        await this.checkAndHandleAutoExit(port);
+      }
       return;
     }
 
@@ -214,6 +292,10 @@ export class AgTopbarDaemon {
         this.log(`[ag-topbar] Disconnected from target ${page.id}`);
         await this.cleanupConnection(page.id, conn);
         this.activeConnections.delete(page.id);
+
+        if (this.autoExit && this.activeConnections.size === 0) {
+          await this.checkAndHandleAutoExit(port);
+        }
       };
 
       this.activeConnections.set(page.id, conn);

@@ -10,8 +10,15 @@ import {
   installLaunchAgent,
   uninstallLaunchAgent,
   isLaunchAgentLoaded,
-  getPlistPath
+  getPlistPath,
+  generateLaunchAgentPlist,
+  generatePlistContent
 } from './src/launchagent.js';
+
+export {
+  generateLaunchAgentPlist,
+  generatePlistContent
+};
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -157,7 +164,7 @@ async function handleStatus() {
     return;
   }
 
-  const mode = launchAgentActive ? 'Running (macOS LaunchAgent)' : `Running (PID: ${pid})`;
+  const mode = launchAgentActive ? 'Running (macOS LaunchAgent WatchPaths on-demand)' : `Running (PID: ${pid})`;
   console.log(`[ag-topbar] Status: ${mode}`);
 
   if (fs.existsSync(STATUS_FILE)) {
@@ -186,10 +193,24 @@ async function handleStatus() {
 }
 
 async function handleRun(isInternalDaemon = false) {
+  const autoExit = process.argv.includes('--auto-exit');
   const daemon = new AgTopbarDaemon({
     statusFile: STATUS_FILE,
-    log: (...args) => console.log(...args)
+    log: (...args) => console.log(...args),
+    autoExit,
+    onExit: (code) => {
+      if (fs.existsSync(PID_FILE)) {
+        try { fs.unlinkSync(PID_FILE); } catch {}
+      }
+      process.exit(code);
+    }
   });
+
+  if (autoExit || isInternalDaemon) {
+    try {
+      fs.writeFileSync(PID_FILE, String(process.pid));
+    } catch {}
+  }
 
   const cleanup = async () => {
     await daemon.stop();
@@ -206,7 +227,7 @@ async function handleRun(isInternalDaemon = false) {
 }
 
 async function handleInstallDaemon() {
-  console.log('[ag-topbar] Setting up macOS LaunchAgent...');
+  console.log('[ag-topbar] Setting up macOS LaunchAgent (WatchPaths on-demand lifecycle)...');
 
   // Stop standalone daemon synchronously if running
   const pid = getRunningPid();
@@ -225,7 +246,7 @@ async function handleInstallDaemon() {
 
     console.log(`[ag-topbar] LaunchAgent installed successfully:`);
     console.log(`       Plist: ${res.plistPath}`);
-    console.log(`[ag-topbar] The daemon will now launch automatically on login.`);
+    console.log(`[ag-topbar] Mode: On-demand (WatchPaths triggers on Antigravity open, auto-exit with reload guard on quit).`);
 
     await new Promise(r => setTimeout(r, 1500));
     await handleStatus();
@@ -293,7 +314,23 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error('[ag-topbar] Error:', err);
-  process.exit(1);
-});
+const isMain = process.argv[1] && (
+  path.resolve(process.argv[1]) === __filename ||
+  path.resolve(process.argv[1]) === path.resolve(__filename)
+);
+
+if (isMain) {
+  main().catch(err => {
+    console.error('[ag-topbar] Error:', err);
+    process.exit(1);
+  });
+}
+
+export {
+  handleStart,
+  handleStop,
+  handleStatus,
+  handleRun,
+  handleInstallDaemon,
+  handleUninstallDaemon
+};

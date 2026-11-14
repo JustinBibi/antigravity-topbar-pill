@@ -22,21 +22,27 @@ export function getPlistPath() {
 }
 
 /**
- * Generate XML plist definition string for launchd
+ * Generate XML plist definition string for launchd with WatchPaths on-demand lifecycle
  * @param {object} options
- * @param {string} options.nodePath
+ * @param {string} [options.nodePath]
  * @param {string} options.scriptPath
  * @param {string} options.workDir
  * @param {string} options.logPath
  * @param {string} [options.label]
+ * @param {string} [options.watchPath]
+ * @param {number} [options.throttleInterval]
+ * @param {boolean} [options.autoExit]
  * @returns {string}
  */
-export function generatePlistContent({
+export function generateLaunchAgentPlist({
   nodePath = process.execPath,
   scriptPath,
   workDir,
   logPath,
-  label = LAUNCH_AGENT_LABEL
+  label = LAUNCH_AGENT_LABEL,
+  watchPath = path.join(os.homedir(), 'Library', 'Application Support', 'Antigravity', 'DevToolsActivePort'),
+  throttleInterval = 2,
+  autoExit = true
 }) {
   const currentPath = process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
 
@@ -46,6 +52,15 @@ export function generatePlistContent({
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
+  const programArgs = [
+    `<string>${escapeXml(nodePath)}</string>`,
+    `<string>${escapeXml(scriptPath)}</string>`,
+    '<string>run</string>'
+  ];
+  if (autoExit) {
+    programArgs.push('<string>--auto-exit</string>');
+  }
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -54,14 +69,18 @@ export function generatePlistContent({
     <string>${escapeXml(label)}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${escapeXml(nodePath)}</string>
-        <string>${escapeXml(scriptPath)}</string>
-        <string>run-daemon</string>
+        ${programArgs.join('\n        ')}
     </array>
+    <key>WatchPaths</key>
+    <array>
+        <string>${escapeXml(watchPath)}</string>
+    </array>
+    <key>ThrottleInterval</key>
+    <integer>${throttleInterval}</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <false/>
     <key>WorkingDirectory</key>
     <string>${escapeXml(workDir)}</string>
     <key>StandardOutPath</key>
@@ -77,6 +96,8 @@ export function generatePlistContent({
 </plist>
 `;
 }
+
+export const generatePlistContent = generateLaunchAgentPlist;
 
 /**
  * Install and activate the LaunchAgent on macOS

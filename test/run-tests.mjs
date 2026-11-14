@@ -2,6 +2,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -12,9 +13,11 @@ import {
   buildUsagePayload
 } from '../src/tracker.js';
 
-import { getActivePort, getAntigravityPages, CdpClient } from '../src/cdp.js';
+import { getActivePort, getAntigravityPages, isCdpEndpointAlive, CdpClient } from '../src/cdp.js';
 import { INJECTED_SCRIPT } from '../src/inject.js';
+import { AgTopbarDaemon } from '../src/daemon.js';
 import {
+  generateLaunchAgentPlist,
   generatePlistContent,
   getPlistPath,
   installLaunchAgent,
@@ -136,7 +139,7 @@ async function runTests() {
   const plistPath = getPlistPath();
   assert(plistPath.endsWith(`${LAUNCH_AGENT_LABEL}.plist`), 'Plist path matches expected label');
 
-  const plist = generatePlistContent({
+  const plist = generateLaunchAgentPlist({
     nodePath: '/usr/local/bin/node',
     scriptPath: '/Users/test/index.js',
     workDir: '/Users/test',
@@ -147,10 +150,40 @@ async function runTests() {
   assert(plist.includes(LAUNCH_AGENT_LABEL), 'Contains label');
   assert(plist.includes('/usr/local/bin/node'), 'Contains nodePath');
   assert(plist.includes('/Users/test/index.js'), 'Contains scriptPath');
+  assert(plist.includes('<string>run</string>'), 'Contains run subcommand');
+  assert(plist.includes('<string>--auto-exit</string>'), 'Contains --auto-exit flag');
+  assert(plist.includes('<key>WatchPaths</key>'), 'Contains WatchPaths');
+  assert(plist.includes('Library/Application Support/Antigravity/DevToolsActivePort'), 'Contains DevToolsActivePort watch path');
+  assert(plist.includes('<key>ThrottleInterval</key>\n    <integer>2</integer>'), 'Contains ThrottleInterval of 2s');
   assert(plist.includes('<key>RunAtLoad</key>\n    <true/>'), 'Contains RunAtLoad');
-  assert(plist.includes('<key>KeepAlive</key>\n    <true/>'), 'Contains KeepAlive');
+  assert(plist.includes('<key>KeepAlive</key>\n    <false/>'), 'Contains KeepAlive: false for on-demand lifecycle');
   assert(plist.includes('<key>PATH</key>'), 'Preserves PATH environment variable');
-  console.log('✓ generatePlistContent: valid XML structure verified');
+  console.log('✓ generateLaunchAgentPlist: WatchPaths, ThrottleInterval, KeepAlive:false, --auto-exit verified');
+
+  // Verify generatePlistContent alias works identically
+  const aliasPlist = generatePlistContent({
+    nodePath: '/usr/local/bin/node',
+    scriptPath: '/Users/test/index.js',
+    workDir: '/Users/test',
+    logPath: '/Users/test/daemon.log'
+  });
+  assert.strictEqual(aliasPlist, plist, 'generatePlistContent is an alias of generateLaunchAgentPlist');
+  console.log('✓ generatePlistContent alias backward-compatibility verified');
+
+  // Verify custom options in generateLaunchAgentPlist
+  const customPlist = generateLaunchAgentPlist({
+    nodePath: '/opt/homebrew/bin/node',
+    scriptPath: '/custom/path/index.js',
+    workDir: '/custom/path',
+    logPath: '/custom/path/custom.log',
+    watchPath: '/custom/DevToolsActivePort',
+    throttleInterval: 5,
+    autoExit: false
+  });
+  assert(customPlist.includes('<string>/custom/DevToolsActivePort</string>'), 'Custom watchPath rendered');
+  assert(customPlist.includes('<integer>5</integer>'), 'Custom throttleInterval rendered');
+  assert(!customPlist.includes('--auto-exit'), 'When autoExit=false, --auto-exit flag is omitted');
+  console.log('✓ generateLaunchAgentPlist: custom options verified');
 
   if (process.platform === 'darwin') {
     // Non-destructive install / uninstall test cycle
@@ -171,6 +204,89 @@ async function runTests() {
     assert.strictEqual(isLaunchAgentLoaded(), false, 'LaunchAgent unloaded from launchctl');
     console.log('✓ installLaunchAgent & uninstallLaunchAgent: lifecycle verified');
   }
+
+  console.log('\n=== [2.5] Testing Auto-Exit & Reload Guard (src/daemon.js) ===');
+
+  // Verify isCdpEndpointAlive helper
+  assert.strictEqual(await isCdpEndpointAlive(null), false, 'null port returns false');
+  assert.strictEqual(await isCdpEndpointAlive(0), false, '0 port returns false');
+  assert.strictEqual(await isCdpEndpointAlive(1), false, 'unreachable port returns false');
+  console.log('✓ isCdpEndpointAlive: invalid/dead ports verified');
+
+  // Case A: Antigravity Window Reload Guard (Cmd+R simulation)
+  // When an active endpoint is responsive on /json/version, daemon MUST stay alive!
+  const mockServer = http.createServer((req, res) => {
+    if (req.url === '/json/version') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ Browser: 'Antigravity/Mock', 'Protocol-Version': '1.3' }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  await new Promise(resolve => mockServer.listen(0, '127.0.0.1', resolve));
+  const reloadServerPort = mockServer.address().port;
+
+  // Endpoint check on running mock server
+  assert.strictEqual(await isCdpEndpointAlive(reloadServerPort), true, 'Mock server /json/version is responsive');
+
+  let exitCalledA = false;
+  let exitCodeA = null;
+  const daemonReload = new AgTopbarDaemon({
+    autoExit: true,
+    reloadGuardRetries: 2,
+    reloadGuardIntervalMs: 50,
+    onExit: (code) => { exitCalledA = true; exitCodeA = code; },
+    log: () => {}
+  });
+  daemonReload.isRunning = true;
+
+  // Simulate disconnect while mock server is still alive (Cmd+R reload simulation)
+  await daemonReload.checkAndHandleAutoExit(reloadServerPort);
+  assert.strictEqual(exitCalledA, false, 'Reload guard: must NOT exit while endpoint is alive');
+  assert.strictEqual(daemonReload.isRunning, true, 'Reload guard: daemon must remain running');
+  console.log('✓ Reload guard: stayed alive across page reload simulation (Cmd+R)');
+
+  // Close mock server
+  await new Promise(resolve => mockServer.close(resolve));
+
+  // Case B: Antigravity Process Termination (Quit simulation)
+  // When endpoint is completely dead over retries, daemon MUST call stop() and onExit(0)!
+  let exitCalledB = false;
+  let exitCodeB = null;
+  const daemonQuit = new AgTopbarDaemon({
+    autoExit: true,
+    reloadGuardRetries: 2,
+    reloadGuardIntervalMs: 50,
+    onExit: (code) => { exitCalledB = true; exitCodeB = code; },
+    log: () => {}
+  });
+  daemonQuit.isRunning = true;
+
+  // reloadServerPort is now dead (server was closed)
+  await daemonQuit.checkAndHandleAutoExit(reloadServerPort);
+  assert.strictEqual(exitCalledB, true, 'Auto-exit: must call exit when endpoint is dead');
+  assert.strictEqual(exitCodeB, 0, 'Auto-exit: exit code must be 0');
+  assert.strictEqual(daemonQuit.isRunning, false, 'Auto-exit: daemon stopped cleanly');
+  console.log('✓ Auto-exit on quit: stopped cleanly and called process.exit(0)');
+
+  // Case C: Standard Daemon Mode (Linux / Windows / persistent daemon)
+  // When autoExit is false, checkAndHandleAutoExit must do nothing
+  let exitCalledC = false;
+  const daemonStandard = new AgTopbarDaemon({
+    autoExit: false,
+    reloadGuardRetries: 2,
+    reloadGuardIntervalMs: 50,
+    onExit: () => { exitCalledC = true; },
+    log: () => {}
+  });
+  daemonStandard.isRunning = true;
+
+  await daemonStandard.checkAndHandleAutoExit(reloadServerPort);
+  assert.strictEqual(exitCalledC, false, 'Standard daemon: autoExit=false never calls exit');
+  assert.strictEqual(daemonStandard.isRunning, true, 'Standard daemon: remains running');
+  console.log('✓ Standard daemon mode: autoExit=false preserves persistent lifecycle (Linux/Win)');
 
   console.log('\n=== [3] Testing cdp.js functions ===');
 

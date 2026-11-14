@@ -33,16 +33,20 @@ cat ~/Library/Application\ Support/Antigravity/DevToolsActivePort
 
 ## 3. Installation Options
 
-### Option A: As a Background Daemon (Ad-hoc)
+### Option A: Standard Background Daemon (Linux, Windows, or ad-hoc macOS)
 ```bash
 node index.js start
 ```
+Starts a lightweight persistent background daemon. To stop, run `node index.js stop`.
 
-### Option B: As a Persistent macOS LaunchAgent (Recommended for User Logins)
+### Option B: macOS LaunchAgent with On-Demand WatchPaths (Recommended for macOS)
 ```bash
 node index.js install-daemon
 ```
-This generates and loads `~/Library/LaunchAgents/com.justinbibi.antigravity-topbar.plist`, keeping the token pill active across reboots and Antigravity restarts.
+Configures macOS `launchd` with `WatchPaths` pointing to `~/Library/Application Support/Antigravity/DevToolsActivePort`:
+- **0 MB / 0 processes when Antigravity is closed**: `KeepAlive: false` allows Node to terminate gracefully.
+- **Instant on-demand wake-up**: launchd starts `node index.js run --auto-exit` the moment Antigravity launches.
+- **Reload Guard**: Built-in 3~4s probe against `/json/version` prevents premature termination when users press `Cmd+R`.
 
 ---
 
@@ -59,7 +63,7 @@ node index.js status
 - **Connected**: Strictly `Connected: YES`
 - **Active Window Sessions**: At least one active conversation target listed:
   ```text
-  [ag-topbar] Status: Running (macOS LaunchAgent)
+  [ag-topbar] Status: Running (macOS LaunchAgent WatchPaths on-demand)
   [ag-topbar] DevTools Port: 55312
   [ag-topbar] Connected: YES
   [ag-topbar] Uptime: 4s
