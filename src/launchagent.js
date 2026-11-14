@@ -15,10 +15,11 @@ export function getLaunchAgentDir() {
 
 /**
  * Get path to the LaunchAgent plist file
+ * @param {string} [label=LAUNCH_AGENT_LABEL]
  * @returns {string}
  */
-export function getPlistPath() {
-  return path.join(getLaunchAgentDir(), `${LAUNCH_AGENT_LABEL}.plist`);
+export function getPlistPath(label = LAUNCH_AGENT_LABEL) {
+  return path.join(getLaunchAgentDir(), `${label}.plist`);
 }
 
 /**
@@ -102,9 +103,26 @@ export const generatePlistContent = generateLaunchAgentPlist;
 /**
  * Install and activate the LaunchAgent on macOS
  * @param {object} options
+ * @param {string} [options.nodePath]
+ * @param {string} options.scriptPath
+ * @param {string} options.workDir
+ * @param {string} options.logPath
+ * @param {string} [options.label]
+ * @param {string} [options.watchPath]
+ * @param {number} [options.throttleInterval]
+ * @param {boolean} [options.autoExit]
  * @returns {{ plistPath: string, loaded: boolean }}
  */
-export function installLaunchAgent({ nodePath, scriptPath, workDir, logPath }) {
+export function installLaunchAgent({
+  nodePath,
+  scriptPath,
+  workDir,
+  logPath,
+  label = LAUNCH_AGENT_LABEL,
+  watchPath,
+  throttleInterval,
+  autoExit = true
+}) {
   if (process.platform !== 'darwin') {
     throw new Error('LaunchAgent installation is only supported on macOS');
   }
@@ -114,7 +132,7 @@ export function installLaunchAgent({ nodePath, scriptPath, workDir, logPath }) {
     fs.mkdirSync(agentDir, { recursive: true });
   }
 
-  const plistPath = getPlistPath();
+  const plistPath = getPlistPath(label);
 
   // If already exists, attempt to unload first
   if (fs.existsSync(plistPath)) {
@@ -127,7 +145,11 @@ export function installLaunchAgent({ nodePath, scriptPath, workDir, logPath }) {
     nodePath: nodePath || process.execPath,
     scriptPath,
     workDir,
-    logPath
+    logPath,
+    label,
+    watchPath,
+    throttleInterval,
+    autoExit
   });
 
   fs.writeFileSync(plistPath, plistContent, 'utf8');
@@ -143,14 +165,15 @@ export function installLaunchAgent({ nodePath, scriptPath, workDir, logPath }) {
 
 /**
  * Deactivate and remove the LaunchAgent
+ * @param {string} [label=LAUNCH_AGENT_LABEL]
  * @returns {{ removed: boolean }}
  */
-export function uninstallLaunchAgent() {
+export function uninstallLaunchAgent(label = LAUNCH_AGENT_LABEL) {
   if (process.platform !== 'darwin') {
     throw new Error('LaunchAgent uninstallation is only supported on macOS');
   }
 
-  const plistPath = getPlistPath();
+  const plistPath = getPlistPath(label);
   if (!fs.existsSync(plistPath)) {
     return { removed: false };
   }
@@ -169,13 +192,14 @@ export function uninstallLaunchAgent() {
 
 /**
  * Check if the LaunchAgent is currently loaded in launchd
+ * @param {string} [label=LAUNCH_AGENT_LABEL]
  * @returns {boolean}
  */
-export function isLaunchAgentLoaded() {
+export function isLaunchAgentLoaded(label = LAUNCH_AGENT_LABEL) {
   if (process.platform !== 'darwin') return false;
   try {
-    const out = execSync(`launchctl list ${LAUNCH_AGENT_LABEL} 2>/dev/null`, { encoding: 'utf8' });
-    return out.includes(LAUNCH_AGENT_LABEL) || out.includes('"PID"');
+    const out = execSync(`launchctl list ${label} 2>/dev/null`, { encoding: 'utf8' });
+    return out.includes(label) || out.includes('"PID"');
   } catch {
     return false;
   }

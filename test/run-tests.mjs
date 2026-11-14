@@ -25,6 +25,7 @@ import {
   isLaunchAgentLoaded,
   LAUNCH_AGENT_LABEL
 } from '../src/launchagent.js';
+import { generateLaunchAgentPlist as indexGeneratePlist } from '../index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -168,7 +169,8 @@ async function runTests() {
     logPath: '/Users/test/daemon.log'
   });
   assert.strictEqual(aliasPlist, plist, 'generatePlistContent is an alias of generateLaunchAgentPlist');
-  console.log('✓ generatePlistContent alias backward-compatibility verified');
+  assert.strictEqual(indexGeneratePlist, generateLaunchAgentPlist, 'index.js exports generateLaunchAgentPlist');
+  console.log('✓ generatePlistContent alias and index.js export backward-compatibility verified');
 
   // Verify custom options in generateLaunchAgentPlist
   const customPlist = generateLaunchAgentPlist({
@@ -186,23 +188,25 @@ async function runTests() {
   console.log('✓ generateLaunchAgentPlist: custom options verified');
 
   if (process.platform === 'darwin') {
-    // Non-destructive install / uninstall test cycle
-    const wasLoaded = isLaunchAgentLoaded();
+    // Non-destructive install / uninstall test cycle using isolated test label
+    const TEST_LABEL = 'com.justinbibi.antigravity-topbar.test';
     const res = installLaunchAgent({
       nodePath: process.execPath,
       scriptPath: path.join(__dirname, '..', 'index.js'),
       workDir: path.join(__dirname, '..'),
-      logPath: path.join(__dirname, '..', 'daemon.log')
+      logPath: path.join(__dirname, '..', 'daemon.log'),
+      label: TEST_LABEL
     });
-    assert(res.loaded, 'LaunchAgent reported loaded');
-    assert(fs.existsSync(res.plistPath), 'Plist file created');
-    assert.strictEqual(isLaunchAgentLoaded(), true, 'LaunchAgent is loaded in launchctl');
+    assert(res.loaded, 'Test LaunchAgent reported loaded');
+    assert(fs.existsSync(res.plistPath), 'Test Plist file created');
+    assert(res.plistPath.includes(TEST_LABEL), 'Uses isolated test label');
+    assert.strictEqual(isLaunchAgentLoaded(TEST_LABEL), true, 'Test LaunchAgent is loaded in launchctl');
 
-    const unRes = uninstallLaunchAgent();
-    assert(unRes.removed, 'LaunchAgent reported removed');
-    assert(!fs.existsSync(res.plistPath), 'Plist file unlinked');
-    assert.strictEqual(isLaunchAgentLoaded(), false, 'LaunchAgent unloaded from launchctl');
-    console.log('✓ installLaunchAgent & uninstallLaunchAgent: lifecycle verified');
+    const unRes = uninstallLaunchAgent(TEST_LABEL);
+    assert(unRes.removed, 'Test LaunchAgent reported removed');
+    assert(!fs.existsSync(res.plistPath), 'Test Plist file unlinked');
+    assert.strictEqual(isLaunchAgentLoaded(TEST_LABEL), false, 'Test LaunchAgent unloaded from launchctl');
+    console.log('✓ installLaunchAgent & uninstallLaunchAgent: lifecycle verified (isolated test label)');
   }
 
   console.log('\n=== [2.5] Testing Auto-Exit & Reload Guard (src/daemon.js) ===');
@@ -210,6 +214,8 @@ async function runTests() {
   // Verify isCdpEndpointAlive helper
   assert.strictEqual(await isCdpEndpointAlive(null), false, 'null port returns false');
   assert.strictEqual(await isCdpEndpointAlive(0), false, '0 port returns false');
+  assert.strictEqual(await isCdpEndpointAlive(-1), false, 'negative port returns false');
+  assert.strictEqual(await isCdpEndpointAlive(NaN), false, 'NaN port returns false');
   assert.strictEqual(await isCdpEndpointAlive(1), false, 'unreachable port returns false');
   console.log('✓ isCdpEndpointAlive: invalid/dead ports verified');
 
@@ -228,8 +234,9 @@ async function runTests() {
   await new Promise(resolve => mockServer.listen(0, '127.0.0.1', resolve));
   const reloadServerPort = mockServer.address().port;
 
-  // Endpoint check on running mock server
-  assert.strictEqual(await isCdpEndpointAlive(reloadServerPort), true, 'Mock server /json/version is responsive');
+  // Endpoint check on running mock server (number and string formats)
+  assert.strictEqual(await isCdpEndpointAlive(reloadServerPort), true, 'Mock server /json/version is responsive (number)');
+  assert.strictEqual(await isCdpEndpointAlive(String(reloadServerPort)), true, 'Mock server /json/version is responsive (string)');
 
   let exitCalledA = false;
   let exitCodeA = null;
@@ -237,6 +244,7 @@ async function runTests() {
     autoExit: true,
     reloadGuardRetries: 2,
     reloadGuardIntervalMs: 50,
+    portDiscovery: () => null,
     onExit: (code) => { exitCalledA = true; exitCodeA = code; },
     log: () => {}
   });
@@ -246,7 +254,9 @@ async function runTests() {
   await daemonReload.checkAndHandleAutoExit(reloadServerPort);
   assert.strictEqual(exitCalledA, false, 'Reload guard: must NOT exit while endpoint is alive');
   assert.strictEqual(daemonReload.isRunning, true, 'Reload guard: daemon must remain running');
-  console.log('✓ Reload guard: stayed alive across page reload simulation (Cmd+R)');
+  assert(daemonReload.pollTimer !== null, 'Reload guard: eager re-poll scheduled upon alive detection');
+  if (daemonReload.pollTimer) clearTimeout(daemonReload.pollTimer);
+  console.log('✓ Reload guard: stayed alive across page reload simulation (Cmd+R) & eager re-poll scheduled');
 
   // Close mock server
   await new Promise(resolve => mockServer.close(resolve));
@@ -259,6 +269,7 @@ async function runTests() {
     autoExit: true,
     reloadGuardRetries: 2,
     reloadGuardIntervalMs: 50,
+    portDiscovery: () => null,
     onExit: (code) => { exitCalledB = true; exitCodeB = code; },
     log: () => {}
   });
@@ -271,6 +282,60 @@ async function runTests() {
   assert.strictEqual(daemonQuit.isRunning, false, 'Auto-exit: daemon stopped cleanly');
   console.log('✓ Auto-exit on quit: stopped cleanly and called process.exit(0)');
 
+  // Case B2: Concurrency Guard Protection
+  // Multiple concurrent checkAndHandleAutoExit calls must not throw or cause multiple exits
+  let exitCountConcurrent = 0;
+  const daemonConcurrent = new AgTopbarDaemon({
+    autoExit: true,
+    reloadGuardRetries: 2,
+    reloadGuardIntervalMs: 50,
+    portDiscovery: () => null,
+    onExit: () => { exitCountConcurrent++; },
+    log: () => {}
+  });
+  daemonConcurrent.isRunning = true;
+  await Promise.all([
+    daemonConcurrent.checkAndHandleAutoExit(reloadServerPort),
+    daemonConcurrent.checkAndHandleAutoExit(reloadServerPort),
+    daemonConcurrent.checkAndHandleAutoExit(reloadServerPort)
+  ]);
+  assert.strictEqual(exitCountConcurrent, 1, 'Concurrency guard: only one exit triggered');
+  console.log('✓ Concurrency guard: concurrent auto-exit calls safely de-duplicated');
+
+  // Case B4: Dynamic Port Restart Simulation
+  // When old port is dead but Antigravity restarts on a new port, reload guard detects new port and stays alive
+  const restartServer = http.createServer((req, res) => {
+    if (req.url === '/json/version') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ Browser: 'Antigravity/Restarted' }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise(resolve => restartServer.listen(0, '127.0.0.1', resolve));
+  const newPort = restartServer.address().port;
+
+  let exitCalledB4 = false;
+  const daemonRestart = new AgTopbarDaemon({
+    autoExit: true,
+    reloadGuardRetries: 2,
+    reloadGuardIntervalMs: 50,
+    portDiscovery: () => newPort,
+    onExit: () => { exitCalledB4 = true; },
+    log: () => {}
+  });
+  daemonRestart.isRunning = true;
+
+  // reloadServerPort is dead, but portDiscovery yields newPort
+  await daemonRestart.checkAndHandleAutoExit(reloadServerPort);
+  assert.strictEqual(exitCalledB4, false, 'Dynamic port restart: daemon must stay alive when fresh port is responsive');
+  assert.strictEqual(daemonRestart.lastPort, newPort, 'Dynamic port restart: lastPort updated to new port');
+  assert.strictEqual(daemonRestart.isRunning, true, 'Dynamic port restart: remains running');
+  if (daemonRestart.pollTimer) clearTimeout(daemonRestart.pollTimer);
+  await new Promise(resolve => restartServer.close(resolve));
+  console.log('✓ Dynamic port restart: reload guard detected new active port and stayed alive');
+
   // Case C: Standard Daemon Mode (Linux / Windows / persistent daemon)
   // When autoExit is false, checkAndHandleAutoExit must do nothing
   let exitCalledC = false;
@@ -278,6 +343,7 @@ async function runTests() {
     autoExit: false,
     reloadGuardRetries: 2,
     reloadGuardIntervalMs: 50,
+    portDiscovery: () => null,
     onExit: () => { exitCalledC = true; },
     log: () => {}
   });
@@ -291,117 +357,121 @@ async function runTests() {
   console.log('\n=== [3] Testing cdp.js functions ===');
 
   const port = getActivePort();
-  console.log('  Discovered DevTools port:', port);
-  assert(typeof port === 'number' && port > 1024, 'Active port must be a valid port number');
-  console.log('✓ getActivePort: port discovery verified');
+  if (port) {
+    console.log('  Discovered DevTools port:', port);
+    assert(typeof port === 'number' && port > 1024, 'Active port must be a valid port number');
+    console.log('✓ getActivePort: port discovery verified');
 
-  const pages = await getAntigravityPages(port);
-  console.log(`  Found ${pages.length} Antigravity page target(s)`);
-  assert(pages.length > 0, 'Must have at least one Antigravity page');
-  console.log('✓ getAntigravityPages: page discovery verified');
+    const pages = await getAntigravityPages(port);
+    console.log(`  Found ${pages.length} Antigravity page target(s)`);
+    assert(pages.length > 0, 'Must have at least one Antigravity page');
+    console.log('✓ getAntigravityPages: page discovery verified');
 
-  console.log('\n=== [4] Testing Live Injection & DOM State via CDP ===');
-  const mainPage = pages.find(p => p.url.includes('/c/')) || pages[0];
-  const client = new CdpClient(mainPage.webSocketDebuggerUrl);
-  await client.connect();
+    console.log('\n=== [4] Testing Live Injection & DOM State via CDP ===');
+    const mainPage = pages.find(p => p.url.includes('/c/')) || pages[0];
+    const client = new CdpClient(mainPage.webSocketDebuggerUrl);
+    await client.connect();
 
-  await client.send('Page.enable');
-  await client.send('Runtime.enable');
-  await client.send('Runtime.addBinding', { name: '__ag_topbar_nav__' });
+    await client.send('Page.enable');
+    await client.send('Runtime.enable');
+    await client.send('Runtime.addBinding', { name: '__ag_topbar_nav__' });
 
-  // Clean any previous state
-  await client.send('Runtime.evaluate', {
-    expression: `(() => {
-      if (typeof window.__AG_TOPBAR_DETACH__ === 'function') window.__AG_TOPBAR_DETACH__();
-      const b = document.getElementById('ag-topbar-token-badge');
-      if (b) b.remove();
-      const t = document.getElementById('ag-topbar-tooltip');
-      if (t) t.remove();
-      const s = document.getElementById('ag-topbar-styles');
-      if (s) s.remove();
-    })()`
-  });
+    // Clean any previous state
+    await client.send('Runtime.evaluate', {
+      expression: `(() => {
+        if (typeof window.__AG_TOPBAR_DETACH__ === 'function') window.__AG_TOPBAR_DETACH__();
+        const b = document.getElementById('ag-topbar-token-badge');
+        if (b) b.remove();
+        const t = document.getElementById('ag-topbar-tooltip');
+        if (t) t.remove();
+        const s = document.getElementById('ag-topbar-styles');
+        if (s) s.remove();
+      })()`
+    });
 
-  // Inject script
-  await client.send('Runtime.evaluate', { expression: INJECTED_SCRIPT });
+    // Inject script
+    await client.send('Runtime.evaluate', { expression: INJECTED_SCRIPT });
 
-  // Verify that before update, ghost badge does NOT attach
-  const preState = await client.send('Runtime.evaluate', {
-    expression: 'document.getElementById("ag-topbar-token-badge") !== null',
-    returnByValue: true
-  });
-  assert.strictEqual(preState.result.value, false, 'No ghost badge before first update');
+    // Verify that before update, ghost badge does NOT attach
+    const preState = await client.send('Runtime.evaluate', {
+      expression: 'document.getElementById("ag-topbar-token-badge") !== null',
+      returnByValue: true
+    });
+    assert.strictEqual(preState.result.value, false, 'No ghost badge before first update');
 
-  // Check state extraction
-  const stateRes = await client.send('Runtime.evaluate', {
-    expression: 'window.__AG_TOPBAR_GET_STATE__()',
-    returnByValue: true
-  });
-  const state = stateRes.result.value;
-  assert(state && typeof state === 'object', 'State object returned');
-  console.log('  Page detected state:', { conversationId: state.conversationId, model: state.model });
+    // Check state extraction
+    const stateRes = await client.send('Runtime.evaluate', {
+      expression: 'window.__AG_TOPBAR_GET_STATE__()',
+      returnByValue: true
+    });
+    const state = stateRes.result.value;
+    assert(state && typeof state === 'object', 'State object returned');
+    console.log('  Page detected state:', { conversationId: state.conversationId, model: state.model });
 
-  // Test 1: Update with NO conversationId should keep badge hidden
-  await client.send('Runtime.evaluate', {
-    expression: `window.__AG_TOPBAR_UPDATE__(${JSON.stringify({
-      conversationId: null,
-      percentStr: '0%',
-      tokenStr: '0'
-    })})`
-  });
-  const noConvVerify = await client.send('Runtime.evaluate', {
-    expression: `(() => {
-      const badge = document.getElementById('ag-topbar-token-badge');
-      return !badge || badge.style.display === 'none';
-    })()`,
-    returnByValue: true
-  });
-  assert.strictEqual(noConvVerify.result.value, true, 'Badge is hidden when no conversationId');
+    // Test 1: Update with NO conversationId should keep badge hidden
+    await client.send('Runtime.evaluate', {
+      expression: `window.__AG_TOPBAR_UPDATE__(${JSON.stringify({
+        conversationId: null,
+        percentStr: '0%',
+        tokenStr: '0'
+      })})`
+    });
+    const noConvVerify = await client.send('Runtime.evaluate', {
+      expression: `(() => {
+        const badge = document.getElementById('ag-topbar-token-badge');
+        return !badge || badge.style.display === 'none';
+      })()`,
+      returnByValue: true
+    });
+    assert.strictEqual(noConvVerify.result.value, true, 'Badge is hidden when no conversationId');
 
-  // Test 2: Push valid conversation update
-  const testPayload = {
-    conversationId: state.conversationId || 'test-conv-123',
-    percentStr: '12%',
-    tokenStr: '120K',
-    dotColor: '#10b981',
-    model: state.model || 'Gemini 3.8 Flash',
-    inputStr: '40,000',
-    cachedStr: '75,000',
-    outputStr: '5,000',
-    contextStr: '120K / 1M (12%)',
-    hasTokens: true
-  };
+    // Test 2: Push valid conversation update
+    const testPayload = {
+      conversationId: state.conversationId || 'test-conv-123',
+      percentStr: '12%',
+      tokenStr: '120K',
+      dotColor: '#10b981',
+      model: state.model || 'Gemini 3.8 Flash',
+      inputStr: '40,000',
+      cachedStr: '75,000',
+      outputStr: '5,000',
+      contextStr: '120K / 1M (12%)',
+      hasTokens: true
+    };
 
-  await client.send('Runtime.evaluate', {
-    expression: `window.__AG_TOPBAR_UPDATE__(${JSON.stringify(testPayload)})`
-  });
+    await client.send('Runtime.evaluate', {
+      expression: `window.__AG_TOPBAR_UPDATE__(${JSON.stringify(testPayload)})`
+    });
 
-  // Verify DOM values and elements
-  const domVerify = await client.send('Runtime.evaluate', {
-    expression: `(() => {
-      const badge = document.getElementById('ag-topbar-token-badge');
-      const text = document.getElementById('ag-topbar-badge-text')?.textContent;
-      const dot = document.querySelector('#ag-topbar-token-badge .ag-dot')?.style.background;
-      const isVisible = badge && badge.style.display !== 'none';
-      return { isVisible, text, dot };
-    })()`,
-    returnByValue: true
-  });
-  assert.strictEqual(domVerify.result.value.isVisible, true, 'Badge is visible');
-  assert.strictEqual(domVerify.result.value.text, '12% · 120K');
+    // Verify DOM values and elements
+    const domVerify = await client.send('Runtime.evaluate', {
+      expression: `(() => {
+        const badge = document.getElementById('ag-topbar-token-badge');
+        const text = document.getElementById('ag-topbar-badge-text')?.textContent;
+        const dot = document.querySelector('#ag-topbar-token-badge .ag-dot')?.style.background;
+        const isVisible = badge && badge.style.display !== 'none';
+        return { isVisible, text, dot };
+      })()`,
+      returnByValue: true
+    });
+    assert.strictEqual(domVerify.result.value.isVisible, true, 'Badge is visible');
+    assert.strictEqual(domVerify.result.value.text, '12% · 120K');
 
-  // Verify detach cleanly removes elements
-  await client.send('Runtime.evaluate', {
-    expression: 'window.__AG_TOPBAR_DETACH__()'
-  });
-  const postDetach = await client.send('Runtime.evaluate', {
-    expression: 'document.getElementById("ag-topbar-token-badge") === null && document.getElementById("ag-topbar-tooltip") === null',
-    returnByValue: true
-  });
-  assert.strictEqual(postDetach.result.value, true, 'Badge & tooltip cleanly removed from DOM');
+    // Verify detach cleanly removes elements
+    await client.send('Runtime.evaluate', {
+      expression: 'window.__AG_TOPBAR_DETACH__()'
+    });
+    const postDetach = await client.send('Runtime.evaluate', {
+      expression: 'document.getElementById("ag-topbar-token-badge") === null && document.getElementById("ag-topbar-tooltip") === null',
+      returnByValue: true
+    });
+    assert.strictEqual(postDetach.result.value, true, 'Badge & tooltip cleanly removed from DOM');
 
-  client.close();
-  console.log('✓ Live CDP injection & DOM verification passed');
+    client.close();
+    console.log('✓ Live CDP injection & DOM verification passed');
+  } else {
+    console.log('  (Active Antigravity instance not detected; live CDP injection skipped cleanly)');
+  }
 
   console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY!');
 }

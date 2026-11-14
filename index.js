@@ -140,8 +140,12 @@ async function handleStop() {
   if (pid) {
     console.log(`[ag-topbar] Stopping daemon (PID: ${pid})...`);
     await stopProcessByPid(pid);
+    if (isLaunchAgentLoaded()) {
+      console.log('[ag-topbar] Note: LaunchAgent is still registered. It will wake up next time Antigravity starts.');
+      console.log('       To completely remove the LaunchAgent, run: node index.js uninstall-daemon');
+    }
   } else if (isLaunchAgentLoaded()) {
-    console.log('[ag-topbar] Notice: Daemon is running via LaunchAgent.');
+    console.log('[ag-topbar] Notice: Daemon is managed by macOS LaunchAgent (currently idle).');
     console.log('[ag-topbar] To stop and remove the LaunchAgent service, run:');
     console.log('       node index.js uninstall-daemon');
   } else {
@@ -164,7 +168,9 @@ async function handleStatus() {
     return;
   }
 
-  const mode = launchAgentActive ? 'Running (macOS LaunchAgent WatchPaths on-demand)' : `Running (PID: ${pid})`;
+  const mode = launchAgentActive
+    ? (pid ? 'Running (macOS LaunchAgent WatchPaths on-demand)' : 'Idle (macOS LaunchAgent WatchPaths on-demand - Waiting for Antigravity)')
+    : `Running (PID: ${pid})`;
   console.log(`[ag-topbar] Status: ${mode}`);
 
   if (fs.existsSync(STATUS_FILE)) {
@@ -227,6 +233,12 @@ async function handleRun(isInternalDaemon = false) {
 }
 
 async function handleInstallDaemon() {
+  if (process.platform !== 'darwin') {
+    console.log('[ag-topbar] Notice: "install-daemon" (macOS LaunchAgent) is only supported on macOS.');
+    console.log('[ag-topbar] For Linux and Windows, use "node index.js start" to run as a persistent background daemon.');
+    return;
+  }
+
   console.log('[ag-topbar] Setting up macOS LaunchAgent (WatchPaths on-demand lifecycle)...');
 
   // Stop standalone daemon synchronously if running
@@ -257,6 +269,12 @@ async function handleInstallDaemon() {
 }
 
 async function handleUninstallDaemon() {
+  if (process.platform !== 'darwin') {
+    console.log('[ag-topbar] Notice: "uninstall-daemon" (macOS LaunchAgent) is only supported on macOS.');
+    console.log('[ag-topbar] For Linux and Windows, use "node index.js stop" to stop the background daemon.');
+    return;
+  }
+
   console.log('[ag-topbar] Removing macOS LaunchAgent...');
   try {
     const res = uninstallLaunchAgent();

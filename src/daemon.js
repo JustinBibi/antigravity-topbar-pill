@@ -18,7 +18,8 @@ export class AgTopbarDaemon {
     autoExit = false,
     reloadGuardRetries = 3,
     reloadGuardIntervalMs = 1000,
-    onExit = null
+    onExit = null,
+    portDiscovery = getActivePort
   } = {}) {
     this.statusFile = statusFile;
     this.log = log;
@@ -26,6 +27,7 @@ export class AgTopbarDaemon {
     this.reloadGuardRetries = reloadGuardRetries;
     this.reloadGuardIntervalMs = reloadGuardIntervalMs;
     this.onExit = onExit || ((code = 0) => process.exit(code));
+    this.portDiscovery = portDiscovery;
     this.isRunning = false;
     this.activeConnections = new Map(); // targetId -> { client, watcher, lastConvId, scriptIdentifier }
     this.pollTimer = null;
@@ -98,7 +100,7 @@ export class AgTopbarDaemon {
 
     this.isGuarding = true;
     try {
-      const targetPort = portHint || this.lastPort || getActivePort();
+      const targetPort = portHint || this.lastPort || this.portDiscovery();
       this.log(`[ag-topbar] No active targets. Checking if Antigravity is reloading or quit (port: ${targetPort || 'none'})...`);
 
       const isAlive = await this.verifyEndpointWithReloadGuard(targetPort);
@@ -114,6 +116,11 @@ export class AgTopbarDaemon {
 
       if (isAlive) {
         this.log('[ag-topbar] DevTools endpoint is responsive. Reload/navigation in progress, staying alive.');
+        // Trigger quick re-poll to reconnect badge quickly without waiting full polling interval
+        if (this.isRunning && !this.isExiting && this.activeConnections.size === 0) {
+          if (this.pollTimer) clearTimeout(this.pollTimer);
+          this.pollTimer = setTimeout(() => this.runLoop(), 300);
+        }
       } else {
         this.log(`[ag-topbar] DevTools endpoint unreachable after ${this.reloadGuardRetries} retries (~3-4s). Antigravity has quit. Auto-exiting...`);
         this.isExiting = true;
@@ -130,11 +137,21 @@ export class AgTopbarDaemon {
       if (!this.isRunning || this.isExiting) return false;
       if (this.activeConnections.size > 0) return true;
 
-      const currentPort = targetPort || getActivePort() || this.lastPort;
-      if (currentPort) {
-        const alive = await isCdpEndpointAlive(currentPort);
+      // 1. Check targetPort if known
+      if (targetPort) {
+        const alive = await isCdpEndpointAlive(targetPort);
         if (alive) {
-          this.lastPort = currentPort;
+          this.lastPort = targetPort;
+          return true;
+        }
+      }
+
+      // 2. Check if Antigravity restarted and created a new active port
+      const freshPort = this.portDiscovery();
+      if (freshPort && freshPort !== targetPort) {
+        const alive = await isCdpEndpointAlive(freshPort);
+        if (alive) {
+          this.lastPort = freshPort;
           return true;
         }
       }
@@ -147,7 +164,7 @@ export class AgTopbarDaemon {
   }
 
   async tick() {
-    const port = getActivePort();
+    const port = this.portDiscovery();
     if (!port) {
       const portToCheck = this.lastPort;
       if (this.lastPort !== null) {
@@ -218,6 +235,10 @@ export class AgTopbarDaemon {
       port,
       targets: targetsSummary
     });
+
+    if (this.autoExit && this.activeConnections.size === 0) {
+      await this.checkAndHandleAutoExit(port);
+    }
   }
 
   async disconnectAll() {

@@ -61,14 +61,15 @@ export async function getAntigravityPages(port) {
 
 /**
  * Check if the CDP HTTP endpoint is responsive (/json/version)
- * @param {number} port
+ * @param {number|string} port
  * @param {number} [timeoutMs=1000]
  * @returns {Promise<boolean>}
  */
 export async function isCdpEndpointAlive(port, timeoutMs = 1000) {
-  if (!port || typeof port !== 'number' || isNaN(port)) return false;
+  const numPort = typeof port === 'number' ? port : parseInt(port, 10);
+  if (!numPort || isNaN(numPort) || numPort <= 0) return false;
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
+    const res = await fetch(`http://127.0.0.1:${numPort}/json/version`, {
       signal: AbortSignal.timeout(timeoutMs)
     });
     return res.ok;
