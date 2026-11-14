@@ -1,0 +1,234 @@
+import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+import {
+  getModelContextLimit,
+  formatTokenCount,
+  readTokensFromLogPath,
+  readLastTokensFromTranscript,
+  buildUsagePayload
+} from '../src/tracker.js';
+
+import { getActivePort, getAntigravityPages, CdpClient } from '../src/cdp.js';
+import { INJECTED_SCRIPT } from '../src/inject.js';
+import {
+  generatePlistContent,
+  getPlistPath,
+  LAUNCH_AGENT_LABEL
+} from '../src/launchagent.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+async function runTests() {
+  console.log('=== [1] Testing tracker.js functions ===');
+
+  // 1.1 Model context limit
+  assert.strictEqual(getModelContextLimit('Gemini 3.8 Flash High'), 1_000_000);
+  assert.strictEqual(getModelContextLimit('Gemini 1.5 Pro'), 2_000_000);
+  assert.strictEqual(getModelContextLimit('Claude 3.5 Sonnet'), 200_000);
+  assert.strictEqual(getModelContextLimit('Claude 3.7 Sonnet Thinking'), 200_000);
+  assert.strictEqual(getModelContextLimit('gpt-4o'), 128_000);
+  assert.strictEqual(getModelContextLimit('o1'), 200_000);
+  assert.strictEqual(getModelContextLimit('o3-mini'), 200_000);
+  assert.strictEqual(getModelContextLimit('DeepSeek V3'), 128_000);
+  assert.strictEqual(getModelContextLimit('DeepSeek R1'), 128_000);
+  assert.strictEqual(getModelContextLimit('Qwen 2.5 72B'), 128_000);
+  assert.strictEqual(getModelContextLimit('Llama 3.3 70B'), 128_000);
+  assert.strictEqual(getModelContextLimit('custom-fine-tuned-model'), 1_000_000);
+  console.log('✓ getModelContextLimit: multi-model limits verified');
+
+  // 1.2 Format token count (edge cases & 999.5K boundary)
+  assert.strictEqual(formatTokenCount(0), '0');
+  assert.strictEqual(formatTokenCount(-50), '0');
+  assert.strictEqual(formatTokenCount(null), '0');
+  assert.strictEqual(formatTokenCount(undefined), '0');
+  assert.strictEqual(formatTokenCount(542), '542');
+  assert.strictEqual(formatTokenCount(1000), '1K');
+  assert.strictEqual(formatTokenCount(37499), '37K');
+  assert.strictEqual(formatTokenCount(106896), '107K');
+  assert.strictEqual(formatTokenCount(999499), '999K');
+  assert.strictEqual(formatTokenCount(999500), '1M'); // Avoids 1000K display
+  assert.strictEqual(formatTokenCount(1_000_000), '1M');
+  assert.strictEqual(formatTokenCount(1_250_000), '1.3M');
+  assert.strictEqual(formatTokenCount(9_950_000), '10M');
+  console.log('✓ formatTokenCount: all boundary formatting verified');
+
+  // 1.3 Synthetic transcript parsing & Large Tool Output resilience (> 100KB)
+  const tmpDir = path.join(__dirname, 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpLog = path.join(tmpDir, 'test_transcript.jsonl');
+
+  // Empty file
+  fs.writeFileSync(tmpLog, '');
+  assert.strictEqual(readTokensFromLogPath(tmpLog), null);
+
+  // File with steps and model response followed by massive 150KB tool output
+  const sampleData = [
+    JSON.stringify({ step_index: 1, source: 'USER', content: 'hello' }),
+    JSON.stringify({ step_index: 2, source: 'MODEL', input_tokens: 3200, cache_read_tokens: 7500, output_tokens: 450 }),
+    JSON.stringify({ step_index: 3, source: 'GENERIC', content: 'z'.repeat(160000) })
+  ].join('\n');
+  fs.writeFileSync(tmpLog, sampleData);
+
+  const parsed = readTokensFromLogPath(tmpLog);
+  assert.deepStrictEqual(parsed, {
+    inputTokens: 3200,
+    cachedTokens: 7500,
+    outputTokens: 450
+  });
+  console.log('✓ readTokensFromLogPath: large tool output (>100KB) scan verified');
+
+  // Cleanup tmp
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+
+  // 1.4 Test real Antigravity transcript if present
+  const realConvId = '664aea0e-c0e4-4e67-bd25-02e8415a3422';
+  const realTokens = readLastTokensFromTranscript(realConvId);
+  if (realTokens) {
+    assert(typeof realTokens.inputTokens === 'number');
+    const realPayload = buildUsagePayload({
+      conversationId: realConvId,
+      modelName: 'Gemini 3.8 Flash High'
+    });
+    console.log('  Live transcript sample payload:', realPayload);
+    assert(realPayload.tokenStr.endsWith('K') || realPayload.tokenStr.endsWith('M'));
+    assert(realPayload.percentStr.endsWith('%'));
+    console.log('✓ buildUsagePayload: real transcript integration verified');
+  }
+
+  // 1.5 Payload color threshold testing
+  const emptyPayload = buildUsagePayload({ conversationId: 'non-existent-conv', modelName: 'Gemini 3.8 Flash' });
+  assert.strictEqual(emptyPayload.dotColor, '#10b981');
+  assert.strictEqual(emptyPayload.percentStr, '0%');
+  assert.strictEqual(emptyPayload.hasTokens, false);
+  console.log('✓ buildUsagePayload: fallback state verified');
+
+  console.log('\n=== [2] Testing launchagent.js ===');
+
+  const plistPath = getPlistPath();
+  assert(plistPath.endsWith(`${LAUNCH_AGENT_LABEL}.plist`), 'Plist path matches expected label');
+
+  const plist = generatePlistContent({
+    nodePath: '/usr/local/bin/node',
+    scriptPath: '/Users/test/index.js',
+    workDir: '/Users/test',
+    logPath: '/Users/test/daemon.log'
+  });
+
+  assert(plist.includes('<plist version="1.0">'), 'Contains plist header');
+  assert(plist.includes(LAUNCH_AGENT_LABEL), 'Contains label');
+  assert(plist.includes('/usr/local/bin/node'), 'Contains nodePath');
+  assert(plist.includes('/Users/test/index.js'), 'Contains scriptPath');
+  assert(plist.includes('<key>RunAtLoad</key>\n    <true/>'), 'Contains RunAtLoad');
+  assert(plist.includes('<key>KeepAlive</key>\n    <true/>'), 'Contains KeepAlive');
+  assert(plist.includes('<key>PATH</key>'), 'Preserves PATH environment variable');
+  console.log('✓ generatePlistContent: valid XML structure verified');
+
+  console.log('\n=== [3] Testing cdp.js functions ===');
+
+  const port = getActivePort();
+  console.log('  Discovered DevTools port:', port);
+  assert(typeof port === 'number' && port > 1024, 'Active port must be a valid port number');
+  console.log('✓ getActivePort: port discovery verified');
+
+  const pages = await getAntigravityPages(port);
+  console.log(`  Found ${pages.length} Antigravity page target(s)`);
+  assert(pages.length > 0, 'Must have at least one Antigravity page');
+  console.log('✓ getAntigravityPages: page discovery verified');
+
+  console.log('\n=== [4] Testing Live Injection & DOM State via CDP ===');
+  const mainPage = pages.find(p => p.url.includes('/c/')) || pages[0];
+  const client = new CdpClient(mainPage.webSocketDebuggerUrl);
+  await client.connect();
+
+  await client.send('Page.enable');
+  await client.send('Runtime.enable');
+  await client.send('Runtime.addBinding', { name: '__ag_topbar_nav__' });
+
+  // Clean any previous state
+  await client.send('Runtime.evaluate', {
+    expression: `(() => {
+      if (typeof window.__AG_TOPBAR_DETACH__ === 'function') window.__AG_TOPBAR_DETACH__();
+      const b = document.getElementById('ag-topbar-token-badge');
+      if (b) b.remove();
+      const t = document.getElementById('ag-topbar-tooltip');
+      if (t) t.remove();
+      const s = document.getElementById('ag-topbar-styles');
+      if (s) s.remove();
+    })()`
+  });
+
+  // Inject script
+  await client.send('Runtime.evaluate', { expression: INJECTED_SCRIPT });
+
+  // Verify that before update, ghost badge does NOT attach
+  const preState = await client.send('Runtime.evaluate', {
+    expression: 'document.getElementById("ag-topbar-token-badge") !== null',
+    returnByValue: true
+  });
+  assert.strictEqual(preState.result.value, false, 'No ghost badge before first update');
+
+  // Check state extraction
+  const stateRes = await client.send('Runtime.evaluate', {
+    expression: 'window.__AG_TOPBAR_GET_STATE__()',
+    returnByValue: true
+  });
+  const state = stateRes.result.value;
+  assert(state && typeof state === 'object', 'State object returned');
+  console.log('  Page detected state:', { conversationId: state.conversationId, model: state.model });
+
+  // Push update
+  const testPayload = {
+    percentStr: '12%',
+    tokenStr: '120K',
+    dotColor: '#10b981',
+    model: state.model || 'Gemini 3.8 Flash',
+    inputStr: '40,000',
+    cachedStr: '75,000',
+    outputStr: '5,000',
+    contextStr: '120K / 1M (12%)',
+    hasTokens: true
+  };
+
+  await client.send('Runtime.evaluate', {
+    expression: `window.__AG_TOPBAR_UPDATE__(${JSON.stringify(testPayload)})`
+  });
+
+  // Verify DOM values and elements
+  const domVerify = await client.send('Runtime.evaluate', {
+    expression: `(() => {
+      const badge = document.getElementById('ag-topbar-token-badge');
+      const text = document.getElementById('ag-topbar-badge-text')?.textContent;
+      const dot = document.querySelector('#ag-topbar-token-badge .ag-dot')?.style.background;
+      const isVisible = badge && badge.style.display !== 'none';
+      return { isVisible, text, dot };
+    })()`,
+    returnByValue: true
+  });
+  assert.strictEqual(domVerify.result.value.isVisible, true, 'Badge is visible');
+  assert.strictEqual(domVerify.result.value.text, '12% · 120K');
+
+  // Verify detach cleanly removes elements
+  await client.send('Runtime.evaluate', {
+    expression: 'window.__AG_TOPBAR_DETACH__()'
+  });
+  const postDetach = await client.send('Runtime.evaluate', {
+    expression: 'document.getElementById("ag-topbar-token-badge") === null && document.getElementById("ag-topbar-tooltip") === null',
+    returnByValue: true
+  });
+  assert.strictEqual(postDetach.result.value, true, 'Badge & tooltip cleanly removed from DOM');
+
+  client.close();
+  console.log('✓ Live CDP injection & DOM verification passed');
+
+  console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY!');
+}
+
+runTests().catch(err => {
+  console.error('\n❌ Test failed:', err);
+  process.exit(1);
+});

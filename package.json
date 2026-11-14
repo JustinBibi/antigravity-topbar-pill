@@ -1,0 +1,42 @@
+{
+  "name": "antigravity-topbar-pill",
+  "version": "1.0.0",
+  "description": "Minimalist real-time context token usage badge in Google Antigravity desktop top bar via CDP",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "antigravity-topbar": "./index.js",
+    "ag-topbar": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js start",
+    "stop": "node index.js stop",
+    "status": "node index.js status",
+    "run": "node index.js run",
+    "install-daemon": "node index.js install-daemon",
+    "uninstall-daemon": "node index.js uninstall-daemon",
+    "test": "node test/run-tests.mjs"
+  },
+  "keywords": [
+    "antigravity",
+    "electron",
+    "cdp",
+    "devtools-protocol",
+    "tokens",
+    "token-tracker",
+    "context-window"
+  ],
+  "author": "JustinBibi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JustinBibi/antigravity-topbar-pill.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JustinBibi/antigravity-topbar-pill/issues"
+  },
+  "homepage": "https://github.com/JustinBibi/antigravity-topbar-pill#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
