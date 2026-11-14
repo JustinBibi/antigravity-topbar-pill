@@ -226,13 +226,13 @@ export class AgTopbarDaemon {
   async syncPage(conn) {
     try {
       const stateRes = await conn.client.send('Runtime.evaluate', {
-        expression: `typeof window.__AG_TOPBAR_GET_STATE__ === 'function' ? window.__AG_TOPBAR_GET_STATE__() : null`,
+        expression: `(typeof window.__AG_TOPBAR_GET_STATE__ === 'function' && window.__AG_TOPBAR_ENABLED__) ? window.__AG_TOPBAR_GET_STATE__() : null`,
         returnByValue: true
       });
 
       let state = stateRes?.result?.value;
       if (!state) {
-        // Injected functions might not be ready yet; re-evaluate injection
+        // Injected functions might not be ready or page was detached; re-evaluate injection
         await conn.client.send('Runtime.evaluate', { expression: INJECTED_SCRIPT }).catch(() => {});
         return null;
       }

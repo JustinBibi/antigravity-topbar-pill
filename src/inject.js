@@ -3,10 +3,8 @@
 export const INJECTED_SCRIPT = `(() => {
   window.__AG_TOPBAR_ENABLED__ = true;
 
-  if (window.__AG_TOPBAR_INITIALIZED__) {
-    if (typeof window.__AG_TOPBAR_ATTACH__ === 'function') {
-      window.__AG_TOPBAR_ATTACH__();
-    }
+  if (window.__AG_TOPBAR_INITIALIZED__ && typeof window.__AG_TOPBAR_ATTACH__ === 'function') {
+    window.__AG_TOPBAR_ATTACH__();
     return;
   }
   window.__AG_TOPBAR_INITIALIZED__ = true;
@@ -204,7 +202,7 @@ export const INJECTED_SCRIPT = `(() => {
   window.__AG_TOPBAR_ATTACH__ = attachBadge;
 
   window.__AG_TOPBAR_UPDATE__ = (data) => {
-    if (!window.__AG_TOPBAR_ENABLED__) return;
+    window.__AG_TOPBAR_ENABLED__ = true;
     hasReceivedData = true;
     currentData = Object.assign(currentData, data);
 
@@ -336,6 +334,11 @@ export const INJECTED_SCRIPT = `(() => {
     if (tooltip) tooltip.remove();
     const styles = document.getElementById('ag-topbar-styles');
     if (styles) styles.remove();
+    try {
+      delete window.__AG_TOPBAR_GET_STATE__;
+      delete window.__AG_TOPBAR_UPDATE__;
+      delete window.__AG_TOPBAR_ATTACH__;
+    } catch {}
   };
 
   // Watch for DOM mutations to re-attach if toolbar unmounts/remounts
