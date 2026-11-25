@@ -1,0 +1,11 @@
+{
+  "name": "context-meter",
+  "displayName": "Context Meter",
+  "description": "Real-time context window token usage, cache hit rate, and turn-by-turn growth chart for the active Antigravity conversation.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Open the Context Meter panel to check my current token usage",
+    "Show how much context window is left in this conversation",
+    "Which turn used the most tokens in this session?"
+  ]
+}

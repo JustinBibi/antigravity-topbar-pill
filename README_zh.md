@@ -1,197 +1,97 @@
-# Antigravity Topbar Token Pill (`antigravity-topbar-pill`)
+# Context Meter — Antigravity 官方架构上下文监控插件 (`context-meter`)
 
 <p align="center">
-  <b>简体中文</b> · <a href="README.md">English</a>
+  <a href="README.md">English</a> · <b>简体中文</b>
 </p>
 
 <p align="center">
-  <b>极简、无侵入、原生质感的 Google Antigravity 顶栏上下文 Token 实时监视器</b><br>
-  <i>A minimalist, 100% non-intrusive real-time context token usage pill for Google Antigravity desktop top bar via CDP.</i>
+  <b>基于 Antigravity 官方 Sidecar UI Plugin 体系的实时上下文 Token 监控面板，支持缓存命中率与每轮增长趋势图。</b>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Node.js-%3E%3D18.0.0-green.svg" alt="Node version" />
   <img src="https://img.shields.io/badge/Dependencies-0-brightgreen.svg" alt="Zero dependencies" />
+  <img src="https://img.shields.io/badge/Plugin-Antigravity%20Sidecar%20UI-blue.svg" alt="Antigravity Sidecar UI Plugin" />
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License" />
-  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg" alt="Platform" />
 </p>
 
 ---
 
-## 🌟 为什么选择 CDP 注入而不是修改 ASAR？ / Why CDP over ASAR Patching?
+## 为什么转向官方 Sidecar UI 插件？
 
-以往的 Electron 插件或 UI 增强方案通常采用解包 `app.asar`、注入脚本并重新打包的方式。这种方式存在致命缺陷：
+从 **Antigravity v2.35+** 开始，Electron 默认关闭了远程调试端口（`--remote-debugging-port`）。本项目 v2.0 全面迁移至 Antigravity 原生 **Plugin + Sidecar Web UI** 体系：
 
-| 维度 | ASAR 暴力解包修改方案 | 本方案 (`antigravity-topbar-pill` CDP 注入) |
-| :--- | :--- | :--- |
-| **应用完整性** | ❌ 破坏 Electron 代码签名与完整性校验，可能触发系统安全报警 | ✅ **100% 零修改**。完全不碰 `app.asar`，纯外部协议连接 |
-| **应用自动更新** | ❌ 每次 Antigravity 自动更新后修改被彻底覆盖，必须重新打补丁 | ✅ **抗更新能力强**。外部守护进程自动发现端口，更新毫无影响 |
-| **内存与性能** | ❌ 引入 Webpack/Vite 大体积打包或多余运行时 | ✅ **极低资源消耗**。内存 `< 15MB`，无动作时 CPU 占用几乎为 `0%` |
-| **第三方依赖** | ❌ 需安装大量 npm 依赖包 (几十 MB 到数百 MB) | ✅ **零外部依赖 (0 Dependencies)**，纯 Node.js 内置模块 |
-| **安装与卸载** | ❌ 必须杀掉应用、替换文件，卸载时需要备份恢复 | ✅ **即开即用、随时卸载**。一键启动，停止时自动抹平 DOM 节点 |
+- **零启动门槛、彻底告别 CDP**：直接点击原版 Dock 图标正常打开 Antigravity 即可，无需传参、无需额外启动器 `.app`、无需 LaunchAgent。
+- **原生绑定当前对话**：Antigravity 打开侧边栏（`AUX_PANE`）时自动将当前 `conversationId` 传给面板，多窗口及切换历史旧对话天然精准同步。
+- **零外部依赖**：仅使用 Node.js 内置模块与 Antigravity 自动注入的 `sidecar_sdk`。
+- **原生亮/暗主题同步**：通过 `/preload.js` 自动继承宿主 CSS 主题变量，搭配透明底矢量图标，与原生界面融为一体。
+- **强制 Token 鉴权与增量读取**：数据接口采用 `POST /api/usage` 接入框架层 `x-sidecar-token` 校验；日志解析采用 64KB 增量分块读取与 ETag 短路，长对话同样流畅不卡顿。
 
 ---
 
-## ✨ 核心特性 / Features
+## 核心特性
 
-1. **原生无边框极简药丸 (Native Minimalist Pill)**
-   - 完美融入 Antigravity 顶栏标题工具栏，半透明背景，无生硬边框。
-   - 随上下文消耗动态变色指示点：
-     - 🟢 `< 60%`：安全（绿色 `#10b981`）
-     - 🟡 `60% ~ 85%`：注意（琥珀色 `#f59e0b`）
-     - 🔴 `>= 85%`：告警（红色 `#ef4444`）
+1. **实时上下文占用仪表盘**
+   - 直观展示当前上下文占比、已用 / 上限（如 `110K / 1M`）以及剩余可用预算。
+   - 动态健康状态指示：
+     - `< 60%`：Healthy（绿色 `#10b981`）
+     - `60% – 85%`：Elevated（琥珀色 `#f59e0b`）
+     - `>= 85%`：Critical（红色 `#ef4444`）
 
-2. **悬停丰富信息卡片 (Interactive Tooltip Breakdown)**
-   - 鼠标悬停即刻弹出高质感毛玻璃半透明浮层，完整呈现：
-     - 当前活动模型（如 `Gemini 3.8 Flash High`、`Claude 3.7 Sonnet` 等）
-     - 输入 Tokens (Input Tokens)
-     - 缓存命中 Tokens (Cache Read Tokens)
-     - 输出 Tokens (Output Tokens)
-     - 实际上下文占用量与总窗口上限（如 `157K / 1M (16%)`）
+2. **Token 明细与 Prompt Cache 命中率**
+   - **Input (Uncached)**：最新一轮非缓存输入 Token。
+   - **Cached Read**：缓存命中 Token 与实时 **Cache Hit Rate (%)**。
+   - **Output**：最新一轮输出 Token 及全会话真实累计输出（超过 40 轮依然精确汇总）。
+   - 完整兼容 **Claude `cache_creation_input_tokens`** 上下文计入。
 
-3. **多模型上下文窗口智能感知 (Multi-Model Context Limits)**
-   - 自动识别当前会话使用的模型并动态匹配其 Context Window 限制：
-     - Gemini 1.5 / 2.0 / 2.5 / 3.0 Pro: **2,000,000 Tokens (2M)**
-     - Gemini Flash 系列: **1,000,000 Tokens (1M)**
-     - Claude 3.5 / 3.7 Sonnet / Thinking / Opus: **200,000 Tokens (200K)**
-     - OpenAI o1 / o3 / o3-mini: **200,000 Tokens (200K)**
-     - DeepSeek V3 / R1: **128,000 Tokens (128K)**
-     - GPT-4o / GPT-4: **128,000 Tokens (128K)**
-     - Qwen / Llama: **128,000 Tokens (128K)**
-
-4. **自愈与全生命周期恢复 (Resilience & Auto-Recovery)**
-   - **重启恢复**：Antigravity 重启或端口变更时自动重新探测并连接。
-   - **刷新恢复**：页面按 `Cmd+R` 或热重载时，通过 CDP `Page.addScriptToEvaluateOnNewDocument` 自动重新挂载。
-   - **路由感知**：会话路由切换 (SPA Route Change) 秒级响应，无需轮询。
-   - **大文件韧性**：针对单步含超长工具返回内容（>150KB）的 transcript 日志进行高效倒序扫描，避免整文件重读。
-
-5. **macOS 零占用瞬态唤醒与双模态混合架构 (Hybrid Lifecycle Architecture)**
-   - **macOS (优雅按需生命周期 - Option 2)**：
-     - 基于 launchd 的 `WatchPaths` 监听 `DevToolsActivePort` 端口凭据文件。
-     - **极客级 0 占用**：Antigravity 未运行时，Node 进程自动终止 (`KeepAlive: false`)，内存占用绝对为 **0 MB**，后台 **0 进程**。
-     - **随应用瞬态自启**：打开 Antigravity，launchd 捕捉文件生成毫秒级唤起守护进程。
-     - **刷新重载守卫 (Reload Guard)**：页面按 `Cmd+R` 时 WebSocket 断开，守护进程通过轮询 `/json/version` 端点检测 Antigravity 存活态（3~4 秒缓冲）。刷新不误杀，只有当应用彻底退出（端口 `ECONNREFUSED`）才安全退出。
-   - **Linux & Windows (轻量常驻守护进程 - Option 1)**：
-     - 保留经典的轻量持久化守护模型 (`node index.js start`)，适配不同平台的后台管理机制。
+3. **1:1 自适应每轮增长趋势图（Turn-by-Turn Growth）**
+   - 随侧边栏宽度 `ResizeObserver` 1:1 等比渲染的 SVG 面积折线图，底部原生 HTML 坐标轴展示真实轮次范围（如 `T22` → `T61`）。
+   - 鼠标悬停任意节点即可查看该轮上下文总量、真实单轮增量（`+Δ`）与输出 Token。
 
 ---
 
-## 🏗️ 架构原理解析 / Architecture
+## 快速安装
 
-```text
-┌────────────────────────────────────────────────────────┐
-│             Google Antigravity Desktop                 │
-│                                                        │
-│   [ Topbar: (🟢 16% · 157K)  Controls  [+][-][x] ]     │
-│       ▲                                                │
-│       │ DOM Badge & Hover Tooltip                      │
-│       ▼                                                │
-│   Electron Chromium Renderer                           │
-│       ▲                                                │
-└───────┼────────────────────────────────────────────────┘
-        │
-        │ Chrome DevTools Protocol (CDP) WebSocket
-        │ (Discovered via ~/Library/Application Support/Antigravity/DevToolsActivePort)
-        ▼
-┌────────────────────────────────────────────────────────┐
-│             antigravity-topbar-pill                    │
-│                                                        │
-│  - src/cdp.js      : Lightweight native WebSocket CDP  │
-│  - src/daemon.js   : Lifecycle & auto-reconnection     │
-│  - src/inject.js   : High-performance DOM pill badge   │
-│  - src/tracker.js  : Backward transcript scanner       │
-└───────▲────────────────────────────────────────────────┘
-        │
-        │ fs.watch (Debounced event streaming)
-        ▼
-┌────────────────────────────────────────────────────────┐
-│ ~/.gemini/antigravity/brain/<id>/.../transcript.jsonl  │
-└────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🚀 快速上手 / Quick Start
-
-### 环境要求 (Prerequisites)
-- **Node.js**: `>= 18.0.0` (推荐 Node 20 / 22 / 25)
-- **操作系统**: macOS（支持 LaunchAgent）、Linux、Windows
-
-### 1. 克隆或下载仓库
+### 1. 克隆并安装插件软链
 ```bash
 git clone https://github.com/JustinBibi/antigravity-topbar-pill.git
 cd antigravity-topbar-pill
+npm run install-plugin
+```
+命令会在 `~/.gemini/config/plugins/context-meter` 创建指向本仓库的软链接（Windows 下自动使用 `junction`，且拒绝覆盖已存在的非软链目录，防止误删数据）。
+
+### 2. 在 Antigravity 中启用
+1. 打开 Antigravity 左侧栏的 **Customizations → Plugins**。
+2. 找到 **Context Meter**（`context-meter`）并开启。
+3. 在任意对话窗口的右侧边栏点击 **`+`** 按钮选择 **Context Meter** 即可常驻查看。
+
+> **更新提示**：拉取后端代码更新（`main.mjs` / `tracker.mjs`）后，在 **Customizations → Plugins** 中将 **Context Meter** 关闭再重新开启一次即可热重载 Sidecar 进程。
+
+### 卸载
+```bash
+npm run uninstall-plugin
 ```
 
-### 2. 后台启动 (Start Background Daemon)
-```bash
-node index.js start
-```
+---
 
-### 3. 查看状态 (Check Status)
-```bash
-node index.js status
-```
-*输出示例：*
+## 目录结构
+
 ```text
-[ag-topbar] Status: Running (PID: 64123)
-[ag-topbar] DevTools Port: 55312
-[ag-topbar] Connected: YES
-[ag-topbar] Uptime: 12s
-[ag-topbar] Active Window Sessions:
-  - Conversation: 664aea0e-c0e4-4e67-bd25-02e8415a3422
-    Model: Gemini 3.8 Flash High
-    Context: 157K / 1M (16%)
+antigravity-topbar-pill/
+├── plugin.json                        # Antigravity 插件清单
+├── assets/logo.svg                    # 透明背景插件图标
+├── sidecars/context_panel/
+│   ├── sidecar.json                   # 声明 has_web_ui 与 AUX_PANE 入口
+│   ├── main.mjs                       # sidecar_sdk 服务（GET / 与强制鉴权 POST /api/usage）
+│   ├── tracker.mjs                    # 64KB 增量 transcript.jsonl 解析 + ETag 缓存
+│   └── index.html                     # 原生主题侧边栏 UI + 1:1 自适应 SVG 趋势图
+├── scripts/install.mjs                # 安全软链安装/卸载脚本
+└── test/run-tests.mjs                 # 自动化单元测试、安全校验与清单校验
 ```
-
-### 4. 停止并清理 (Stop & Detach)
-```bash
-node index.js stop
-```
-*该命令会优雅断开连接，并即刻从所有打开的 Antigravity 窗口中清理药丸 DOM 与监听器，不留任何痕迹。*
 
 ---
 
-## 🖥️ 设为按需开机自启服务 (macOS LaunchAgent WatchPaths)
-
-在 macOS 上推荐配置为 launchd 智能按需服务：
-- **当 Antigravity 打开时**：launchd 监听到 `DevToolsActivePort` 写入，自动以 `--auto-exit` 唤醒守护进程并注入药丸。
-- **当用户刷新页面 (`Cmd+R`) 时**：重载守卫（Reload Guard）通过 CDP HTTP 端点探测，保持服务在线不中断。
-- **当 Antigravity 退出时**：守护进程安全解绑并自动退出，系统回归 **0 进程、0 内存** 状态。
-
-### 安装 macOS LaunchAgent 按需服务
-```bash
-node index.js install-daemon
-```
-程序会在 `~/Library/LaunchAgents/com.justinbibi.antigravity-topbar.plist` 生成包含 `WatchPaths`、`ThrottleInterval` 与 `KeepAlive: false` 的服务配置并即刻激活。
-
-### 卸载 macOS LaunchAgent
-```bash
-node index.js uninstall-daemon
-```
-
-> **提示（Linux & Windows 用户）**：Linux 与 Windows 继续使用 Option 1 标准持久守护模式：使用 `node index.js start` 启动后台守护进程，`node index.js stop` 停止并清理。
-
----
-
-## 🛠️ CLI 命令速查 / Commands
-
-| 命令 | 说明 | 适用平台 |
-| :--- | :--- | :--- |
-| `node index.js start` | 在后台启动持久守护进程（Option 1） | Linux / Windows / macOS |
-| `node index.js stop` | 停止后台守护进程并清理所有窗口的 UI 药丸 | 全部平台 |
-| `node index.js status` | 检查守护进程状态、连接端口及各窗口会话 | 全部平台 |
-| `node index.js run` | 在前台直接运行（输出详细调试日志，按 `Ctrl+C` 退出） | 全部平台 |
-| `node index.js run --auto-exit` | 按需运行模式（Antigravity 退出时自动退出 Node 进程） | macOS LaunchAgent |
-| `node index.js install-daemon` | 安装并激活 macOS LaunchAgent `WatchPaths` 按需自启服务 | macOS |
-| `node index.js uninstall-daemon` | 卸载 macOS LaunchAgent 服务并清理药丸 | macOS |
-| `npm test` | 执行全套自动化单元测试、重载守卫与真实 CDP 联调测试 | 全部平台 |
-
----
-
-## 🧪 自动化测试 / Testing
-
-项目内置了严格的测试集，覆盖 Token 算法边界、超大日志抗压扫描、LaunchAgent Plist 生成与真实 CDP DOM 注入：
+## 自动化测试
 
 ```bash
 npm test
@@ -199,13 +99,13 @@ npm test
 
 ---
 
-## 🤖 AI 智能体指南 / Guide for AI Agents
+## AI 智能体指南
 
-如果您是一个正在协助用户的 AI Agent（如 Cursor Agent、Antigravity Assistant、Claude Code 等），请直接参考 [AGENTS.md](file:///Users/bibizhang/Projects/antigravity-topbar-pill/AGENTS.md) 了解安全安装与无害验证断言步骤。
+如果你是正在协助用户的 AI Agent，请参考 [AGENTS.md](AGENTS.md) 了解安全安装、Sidecar 开发避坑规范、自动化测试断言与侧边栏唤醒方式。
 
 ---
 
-## 📄 开源许可证 / License
+## 开源许可证
 
-本项目基于 [MIT License](file:///Users/bibizhang/Projects/antigravity-topbar-pill/LICENSE) 开源发布。
+本项目基于 [MIT License](LICENSE) 开源发布。
 Copyright (c) 2026 JustinBibi.

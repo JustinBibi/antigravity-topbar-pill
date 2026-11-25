@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Context Meter</title>
+  <script src="/preload.js"></script>
+  <style>
+    :root {
+      --bg: var(--background, #fafafa);
+      --fg: var(--foreground, #111827);
+      --card-bg: var(--card, #ffffff);
+      --muted-bg: var(--muted, rgba(128, 128, 128, 0.08));
+      --muted-fg: var(--muted-foreground, #6b7280);
+      --border-color: var(--border, rgba(128, 128, 128, 0.2));
+      --health-color: #10b981;
+      --card-gap: 12px;
+      --radius: 10px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 12px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: var(--card-gap);
+      max-width: 560px;
+      margin: 0 auto;
+      padding: 20px 14px 16px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 14px;
+    }
+
+    .header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .model-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--health-color);
+      flex-shrink: 0;
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--health-color) 20%, transparent);
+      transition: background 0.2s ease;
+    }
+
+    .model-name {
+      font-weight: 600;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pill {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--health-color) 14%, transparent);
+      color: var(--health-color);
+      flex-shrink: 0;
+    }
+
+    .hero-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .hero-percent {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      font-family: var(--mono);
+      line-height: 1.1;
+    }
+
+    .hero-ratio {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted-fg);
+    }
+
+    .progress-track {
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--muted-bg);
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: var(--health-color);
+      transition: width 0.35s ease, background 0.25s ease;
+    }
+
+    .sub-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--muted-fg);
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--card-gap);
+    }
+
+    .metric-box {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+    }
+
+    .metric-label {
+      font-size: 11px;
+      color: var(--muted-fg);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+
+    .metric-val {
+      font-family: var(--mono);
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .metric-sub {
+      font-size: 10px;
+      color: var(--muted-fg);
+      margin-top: 2px;
+    }
+
+    .badge-hit {
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--muted-bg);
+      color: var(--fg);
+    }
+
+    .chart-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .chart-title {
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .chart-hover {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted-fg);
+      min-height: 16px;
+    }
+
+    .chart-wrap {
+      width: 100%;
+      height: 96px;
+      position: relative;
+    }
+
+    .chart-wrap svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      overflow: visible;
+    }
+
+    .chart-axis {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted-fg);
+      margin-top: 6px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 20px 8px;
+      color: var(--muted-fg);
+      font-size: 12px;
+    }
+
+    .footer {
+      text-align: center;
+      font-size: 10px;
+      color: var(--muted-fg);
+      font-family: var(--mono);
+      opacity: 0.75;
+    }
+  </style>
+</head>
+<body>
+  <div class="stack">
+    <div class="card">
+      <div class="header-row">
+        <div class="model-wrap">
+          <span class="dot" id="health-dot"></span>
+          <span class="model-name" id="model-name">Waiting for conversation...</span>
+        </div>
+        <span class="pill" id="health-pill">Healthy</span>
+      </div>
+
+      <div class="hero-row">
+        <span class="hero-percent" id="hero-percent">0%</span>
+        <span class="hero-ratio" id="hero-ratio">0 / 1M</span>
+      </div>
+
+      <div class="progress-track">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+
+      <div class="sub-row">
+        <span id="remaining-label">Remaining: 1M</span>
+        <span id="turns-label">0 turns</span>
+      </div>
+    </div>
+
+    <div class="metrics-grid">
+      <div class="metric-box">
+        <div class="metric-label"><span>Input (Uncached)</span></div>
+        <div class="metric-val" id="val-input">0</div>
+        <div class="metric-sub">Latest turn</div>
+      </div>
+
+      <div class="metric-box">
+        <div class="metric-label">
+          <span>Cached Read</span>
+          <span class="badge-hit" id="val-cache-rate">0% hit</span>
+        </div>
+        <div class="metric-val" id="val-cached">0</div>
+        <div class="metric-sub">Prompt cache</div>
+      </div>
+
+      <div class="metric-box">
+        <div class="metric-label"><span>Output</span></div>
+        <div class="metric-val" id="val-output">0</div>
+        <div class="metric-sub" id="val-total-output">Session total: 0</div>
+      </div>
+
+      <div class="metric-box">
+        <div class="metric-label"><span>Context Used</span></div>
+        <div class="metric-val" id="val-context">0</div>
+        <div class="metric-sub">Input + Cached</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="chart-header">
+        <span class="chart-title">Turn-by-Turn Growth</span>
+        <span class="chart-hover" id="chart-hover">Hover a turn to inspect</span>
+      </div>
+      <div class="chart-wrap" id="chart-wrap">
+        <div class="empty-state">Send a message to see token growth across turns.</div>
+      </div>
+      <div class="chart-axis" id="chart-axis" style="display: none;"></div>
+    </div>
+
+    <div class="footer" id="conv-footer">No active conversation</div>
+  </div>
+
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get('token') || '';
+      const conversationId = params.get('conversationId') || '';
+
+      let lastEtag = '';
+      let lastData = null;
+      let pollTimer = null;
+
+      const el = {
+        dot: document.getElementById('health-dot'),
+        model: document.getElementById('model-name'),
+        pill: document.getElementById('health-pill'),
+        percent: document.getElementById('hero-percent'),
+        ratio: document.getElementById('hero-ratio'),
+        fill: document.getElementById('progress-fill'),
+        remaining: document.getElementById('remaining-label'),
+        turns: document.getElementById('turns-label'),
+        input: document.getElementById('val-input'),
+        cached: document.getElementById('val-cached'),
+        cacheRate: document.getElementById('val-cache-rate'),
+        output: document.getElementById('val-output'),
+        totalOutput: document.getElementById('val-total-output'),
+        context: document.getElementById('val-context'),
+        chartWrap: document.getElementById('chart-wrap'),
+        chartAxis: document.getElementById('chart-axis'),
+        chartHover: document.getElementById('chart-hover'),
+        footer: document.getElementById('conv-footer')
+      };
+
+      function formatCompact(n) {
+        if (!Number.isFinite(n) || n <= 0) return '0';
+        if (n >= 999500) return (n / 1000000).toFixed(1).replace('.0', '') + 'M';
+        if (n >= 1000) return Math.round(n / 1000) + 'K';
+        return String(Math.round(n));
+      }
+
+      function sanitizeHexColor(color) {
+        return typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color) ? color : '#10b981';
+      }
+
+      function buildChartSvg(points, dims, safeColor) {
+        const { w, h, padX, padTop, plotH } = dims;
+        const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+        const areaPath = points.length > 1
+          ? `${linePath} L${points[points.length - 1].x.toFixed(1)},${(padTop + plotH).toFixed(1)} L${points[0].x.toFixed(1)},${(padTop + plotH).toFixed(1)} Z`
+          : '';
+
+        const r = points.length > 20 ? 2.8 : 3.5;
+        const circles = points.map((p, i) => {
+          const cx = p.x.toFixed(1);
+          const cy = p.y.toFixed(1);
+          return (
+            `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${safeColor}" stroke="var(--card-bg)" stroke-width="1.5" pointer-events="none" />` +
+            `<circle cx="${cx}" cy="${cy}" r="8" fill="transparent" data-idx="${i}" style="cursor:pointer;" />`
+          );
+        }).join('');
+
+        const baselineY = (padTop + plotH).toFixed(1);
+        const midY = (padTop + plotH / 2).toFixed(1);
+
+        return `
+          <svg viewBox="0 0 ${w} ${h}">
+            <defs>
+              <linearGradient id="ctx-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="${safeColor}" stop-opacity="0.28" />
+                <stop offset="100%" stop-color="${safeColor}" stop-opacity="0.02" />
+              </linearGradient>
+            </defs>
+            <line x1="${padX}" y1="${midY}" x2="${w - padX}" y2="${midY}" stroke="var(--border-color)" stroke-dasharray="3 3" stroke-width="1" />
+            <line x1="${padX}" y1="${baselineY}" x2="${w - padX}" y2="${baselineY}" stroke="var(--border-color)" stroke-width="1" />
+            ${areaPath ? `<path d="${areaPath}" fill="url(#ctx-grad)" />` : ''}
+            ${points.length > 1 ? `<path d="${linePath}" fill="none" stroke="${safeColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />` : ''}
+            ${circles}
+          </svg>
+        `;
+      }
+
+      function bindChartHover(history) {
+        el.chartWrap.querySelectorAll('circle[data-idx]').forEach((node) => {
+          node.addEventListener('mouseenter', () => {
+            const item = history[Number(node.getAttribute('data-idx'))];
+            if (!item) return;
+            const sign = item.delta >= 0 ? '+' : '';
+            el.chartHover.textContent = `T${item.turn} · ${formatCompact(item.contextUsed)} (${sign}${formatCompact(item.delta)}) · Out ${formatCompact(item.outputTokens)}`;
+          });
+        });
+      }
+
+      function renderChartAxis(history, maxVal) {
+        const startLabel = document.createElement('span');
+        startLabel.textContent = `T${history[0].turn}`;
+        const endLabel = document.createElement('span');
+        endLabel.textContent = `T${history[history.length - 1].turn} (${formatCompact(maxVal)} peak)`;
+        el.chartAxis.replaceChildren(startLabel, endLabel);
+        el.chartAxis.style.display = 'flex';
+      }
+
+      function renderChart(history, accentColor) {
+        if (!history || history.length === 0) {
+          el.chartWrap.innerHTML = '<div class="empty-state">Send a message to see token growth across turns.</div>';
+          el.chartAxis.style.display = 'none';
+          el.chartAxis.replaceChildren();
+          return;
+        }
+
+        const safeColor = sanitizeHexColor(accentColor);
+        const w = Math.max(200, Math.round(el.chartWrap.clientWidth || 320));
+        const h = 96;
+        const padX = 6;
+        const padTop = 8;
+        const padBottom = 6;
+        const plotW = w - padX * 2;
+        const plotH = h - padTop - padBottom;
+        const maxVal = Math.max(...history.map((d) => d.contextUsed), 1);
+        const stepX = history.length > 1 ? plotW / (history.length - 1) : 0;
+
+        const points = history.map((d, i) => ({
+          x: history.length > 1 ? padX + i * stepX : padX + plotW / 2,
+          y: padTop + plotH - (d.contextUsed / maxVal) * plotH,
+          d
+        }));
+
+        el.chartWrap.innerHTML = buildChartSvg(points, { w, h, padX, padTop, plotH }, safeColor);
+        renderChartAxis(history, maxVal);
+        bindChartHover(history);
+      }
+
+      function render(data) {
+        lastData = data;
+        const accent = sanitizeHexColor(data.health?.color);
+        document.documentElement.style.setProperty('--health-color', accent);
+
+        el.model.textContent = data.model || 'Unknown Model';
+        el.pill.textContent = data.health?.label || 'Healthy';
+        el.percent.textContent = data.percentStr || '0%';
+        el.ratio.textContent = `${data.tokenStr || '0'} / ${data.limitStr || '1M'}`;
+        el.fill.style.width = `${Math.min(100, Math.max(0, data.percentNum || 0))}%`;
+        el.remaining.textContent = `Remaining: ${data.remainingStr || '1M'}`;
+        el.turns.textContent = `${data.turnCount || 0} ${data.turnCount === 1 ? 'turn' : 'turns'}`;
+
+        el.input.textContent = data.latest?.inputStr || '0';
+        el.cached.textContent = data.latest?.cachedStr || '0';
+        el.cacheRate.textContent = `${data.cacheHitRate || 0}% hit`;
+        el.output.textContent = data.latest?.outputStr || '0';
+        el.totalOutput.textContent = `Session total: ${data.latest?.totalOutputStr || '0'}`;
+        el.context.textContent = (data.contextUsed || 0).toLocaleString();
+
+        renderChart(data.history || [], accent);
+
+        if (data.conversationId) {
+          el.footer.textContent = `Conversation ${data.conversationId.slice(0, 8)}...`;
+        } else {
+          el.footer.textContent = 'No active conversation';
+        }
+      }
+
+      el.chartWrap.addEventListener('mouseleave', () => {
+        el.chartHover.textContent = 'Hover a turn to inspect';
+      });
+
+      if (typeof ResizeObserver !== 'undefined') {
+        let lastWidth = 0;
+        const ro = new ResizeObserver((entries) => {
+          const width = Math.round(entries[0]?.contentRect?.width || 0);
+          if (width > 0 && width !== lastWidth && lastData) {
+            lastWidth = width;
+            renderChart(lastData.history || [], lastData.health?.color);
+          }
+        });
+        ro.observe(el.chartWrap);
+      }
+
+      async function poll() {
+        if (document.hidden) return;
+        try {
+          const headers = { 'Content-Type': 'application/json' };
+          if (token) headers['x-sidecar-token'] = token;
+
+          const res = await fetch('/api/usage', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ conversationId, etag: lastEtag })
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.unchanged) return;
+          if (data.etag) lastEtag = data.etag;
+          render(data);
+        } catch {}
+      }
+
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) poll();
+      });
+
+      poll();
+      pollTimer = setInterval(poll, 1500);
+      window.addEventListener('beforeunload', () => clearInterval(pollTimer));
+    })();
+  </script>
+</body>
+</html>

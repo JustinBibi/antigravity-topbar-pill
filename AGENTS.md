@@ -1,103 +1,91 @@
-# AI Agent Integration & Verification Guide
+# AI Agent Integration & Maintenance Guide
 
-This guide is designed for AI Coding Agents (such as **Google Antigravity**, **Cursor**, **Claude Code**, **Gemini CLI**, **Windsurf**, etc.) to safely install, verify, and manage `antigravity-topbar-pill` in user environments without causing disruption.
-
----
-
-## 1. Safety Principles for Agents
-
-1. **Never kill or restart the host Antigravity app**: The user may be actively chatting or coding. `antigravity-topbar-pill` dynamically hooks into running Electron instances via CDP without requiring any app restart.
-2. **Never modify `app.asar`**: Zero ASAR hacking. Never attempt to unpack, patch, or alter Antigravity application bundles.
-3. **Assert deterministically**: Always verify the installation by checking CLI output assertions rather than guessing.
+This repository is a native **Antigravity Sidecar UI Plugin** (`context-meter`) that renders a real-time context token usage panel in Antigravity's auxiliary side pane (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`).
 
 ---
 
-## 2. Preflight Checks
+## 1. Architecture Overview
 
-Before installing or running, execute the following commands in shell:
+- **Zero external dependencies**: Uses only Node.js built-ins and Antigravity's injected `sidecar_sdk`.
+- **Read-only data source**: Incrementally reads `~/.gemini/antigravity/brain/<conversationId>/.system_generated/logs/transcript.jsonl` (or `$ANTIGRAVITY_APP_DATA_DIR` if set).
+- **Native lifecycle & conversation binding**: Antigravity automatically manages the sidecar process and passes `?conversationId=<id>&token=<token>` to the side pane.
 
-### Check 1: Node.js Runtime (>= 18 required)
-```bash
-node -v
+```text
+plugin.json                       # Plugin manifest (name: "context-meter")
+assets/logo.svg                   # Transparent-background SVG icon (light & dark friendly)
+scripts/install.mjs               # Safe symlink installer (refuses to overwrite real dirs)
+sidecars/context_panel/
+├── sidecar.json                  # Declares has_web_ui: true + AUX_PANE entrypoint
+├── main.mjs                      # sidecar_sdk server: GET / and POST /api/usage
+├── tracker.mjs                   # 64KB incremental JSONL reader + ETag + full-session totals
+└── index.html                    # Native-themed UI with 1:1 SVG chart
 ```
-**Expected assertion**: Output must be `>= v18.0.0` (v20, v22, v25+ fully supported with native WebSocket and fetch).
-
-### Check 2: Antigravity DevTools Port Availability
-On macOS:
-```bash
-cat ~/Library/Application\ Support/Antigravity/DevToolsActivePort
-```
-**Expected assertion**: Must output a positive integer port (e.g. `55312`) followed by a path. If the file does not exist, notify the user that Google Antigravity needs to be running.
 
 ---
 
-## 3. Installation Options
+## 2. Safety Principles
 
-### Option A: Standard Background Daemon (Linux, Windows, or ad-hoc macOS)
-```bash
-node index.js start
-```
-Starts a lightweight persistent background daemon. To stop, run `node index.js stop`.
-
-### Option B: macOS LaunchAgent with On-Demand WatchPaths (Recommended for macOS)
-```bash
-node index.js install-daemon
-```
-Configures macOS `launchd` with `WatchPaths` pointing to `~/Library/Application Support/Antigravity/DevToolsActivePort`:
-- **0 MB / 0 processes when Antigravity is closed**: `KeepAlive: false` allows Node to terminate gracefully.
-- **Instant on-demand wake-up**: launchd starts `node index.js run --auto-exit` the moment Antigravity launches.
-- **Reload Guard**: Built-in 3~4s probe against `/json/version` prevents premature termination when users press `Cmd+R`.
+1. **Never kill or restart Antigravity**: Plugin discovery and activation take effect live without restarting the host app.
+2. **Never modify `app.asar` or `~/.gemini/config/config.json` manually**: Always let the user enable, disable, or reload the plugin via Antigravity's Customizations UI (`[Context Meter](customization://context-meter)`).
+3. **Never overwrite non-symlink directories**: `scripts/install.mjs` checks `lstatSync` and refuses to delete or replace real directories/files.
+4. **Keep public assets clean**: Never commit local absolute paths (e.g., `/Users/...`), temporary logs, or secrets.
 
 ---
 
-## 4. Verification Assertions
+## 3. Installation, Activation & Reloading
 
-To confirm that the badge is live and communicating with the renderer, run:
-
+### Install plugin symlink
 ```bash
-node index.js status
+npm run install-plugin
 ```
+This links the repository to `~/.gemini/config/plugins/context-meter` (uses a `junction` on Windows).
 
-### Passing Assertion Criteria:
-- **Status**: Contains `Running`
-- **Connected**: Strictly `Connected: YES`
-- **Active Window Sessions**: At least one active conversation target listed:
-  ```text
-  [ag-topbar] Status: Running (macOS LaunchAgent WatchPaths on-demand)
-  [ag-topbar] DevTools Port: 55312
-  [ag-topbar] Connected: YES
-  [ag-topbar] Uptime: 4s
-  [ag-topbar] Active Window Sessions:
-    - Conversation: <conversation-uuid>
-      Model: <model-name>
-      Context: <percent>% · <tokens>
-  ```
+### Enable & open
+1. Guide the user to enable **Context Meter** via `[Context Meter](customization://context-meter)`.
+2. Once enabled and running, the user can open the panel from the side pane `+` menu or via `[Context Meter](sidecar://context-meter/context_panel/)`.
+
+### Reload behavior after code edits
+- **Frontend (`index.html`)**: `main.mjs` reads `index.html` on each request with `Cache-Control: no-store`. Closing and reopening the side pane tab immediately reflects UI edits.
+- **Backend (`main.mjs`, `tracker.mjs`)**: Toggle **Context Meter** off and back on once in `[Context Meter](customization://context-meter)` so Antigravity restarts the sidecar process with the new backend code.
 
 ---
 
-## 5. Automated Verification Test Suite
+## 4. Antigravity Sidecar Engineering Guardrails
 
-You can execute the automated test suite anytime to verify backward log parsing, CDP discovery, LaunchAgent XML generation, and live DOM injection:
+Any AI agent or maintainer modifying this plugin **MUST** respect these host-specific behaviors:
+
+1. **`/preload.js` resets `body` padding**: Antigravity's `/preload.js` executes `document.body.style.padding = '0'` on `DOMContentLoaded`. Always apply outer spacing on an inner container (`.stack`), never on `body`.
+2. **Avoid host `--accent` CSS variable collision**: Host `theme-change` messages inject `--accent` onto `:root`. Keep custom health/status colors in a dedicated variable (`--health-color`).
+3. **Keep `/api/usage` as `POST` (not `GET`)**: `sidecar_sdk` only enforces `x-sidecar-token` authentication on non-GET requests (`req.method !== 'GET'`). Keeping `/api/usage` on `POST` guarantees token auth at the framework layer.
+4. **Preserve incremental reading & full-session totals**:
+   - `tracker.mjs` maintains a bounded `Map` cache keyed by `filePath` (`ino` + `byteOffset`) and reads appended bytes in 64KB chunks with partial-JSON line buffering. Do not regress to full-file `fs.readFileSync`.
+   - Keep full-session `turnCount` and `totalOutput` decoupled from the 40-turn chart window so long conversations (> 40 turns) preserve real turn indices (e.g. `T22` → `T61`), accurate per-turn `delta`, and true cumulative output.
+   - Include `cache_creation_tokens` / `cache_creation_input_tokens` in `contextUsed` for Claude models.
+5. **Render SVG charts 1:1 (never `preserveAspectRatio="none"`)**: Compute `viewBox` from the container's real `clientWidth` with a `ResizeObserver`, and render axis labels as native HTML elements to prevent oval distortion and stretched text.
+6. **Keep `assets/logo.svg` transparent**: Do not add an opaque dark background `<rect>`; use medium/emerald strokes legible on both light and dark themes.
+
+---
+
+## 5. Automated Verification
+
+Run the test suite before committing or pushing:
 
 ```bash
 npm test
 ```
-**Expected assertion**: Exit code `0` and ending with `🎉 ALL TESTS PASSED SUCCESSFULLY!`.
+
+**Expected assertion**: Exit code `0` ending with `🎉 ALL TESTS PASSED SUCCESSFULLY!`.
+
+Tests cover:
+- Plugin & sidecar manifests, `POST` route enforcement, and frontend inline `<script>` syntax validation.
+- Multi-model context limits, formatting boundaries, and `conversationId` path-traversal guards.
+- Multi-turn parsing across large tool outputs (> 100KB), ETag short-circuiting, > 40 turns accuracy (55 turns), incremental append + partial JSON line recovery, and Claude `cache_creation_input_tokens`.
+- Safe symlink install/uninstall and non-symlink directory protection in `scripts/install.mjs`.
 
 ---
 
-## 6. Safe Removal & Rollback
+## 6. Safe Removal
 
-If the user requests removal or you need to roll back:
-
-### If installed as LaunchAgent:
 ```bash
-node index.js uninstall-daemon
+npm run uninstall-plugin
 ```
-
-### If running as ad-hoc daemon:
-```bash
-node index.js stop
-```
-
-Both commands cleanly detach the DOM elements (badge, tooltip, styles) from all open Antigravity windows immediately.

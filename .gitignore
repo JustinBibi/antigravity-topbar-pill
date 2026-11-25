@@ -1,13 +1,7 @@
 # Node modules
 node_modules/
 
-# Runtime daemon files
-daemon.pid
-daemon.log
-status.json
-
-# Test outputs
-test/tmp/
+# Logs
 *.log
 
 # OS artifacts

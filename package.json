@@ -1,27 +1,17 @@
 {
   "name": "antigravity-topbar-pill",
-  "version": "1.0.0",
-  "description": "Minimalist real-time context token usage badge in Google Antigravity desktop top bar via CDP",
+  "version": "2.0.0",
+  "description": "Official Antigravity UI plugin for real-time context window token usage, cache hit rate, and turn-by-turn growth tracking",
   "type": "module",
-  "main": "index.js",
-  "bin": {
-    "antigravity-topbar": "./index.js",
-    "ag-topbar": "./index.js"
-  },
   "scripts": {
-    "start": "node index.js start",
-    "stop": "node index.js stop",
-    "status": "node index.js status",
-    "run": "node index.js run",
-    "install-daemon": "node index.js install-daemon",
-    "uninstall-daemon": "node index.js uninstall-daemon",
+    "install-plugin": "node scripts/install.mjs install",
+    "uninstall-plugin": "node scripts/install.mjs uninstall",
     "test": "node test/run-tests.mjs"
   },
   "keywords": [
     "antigravity",
-    "electron",
-    "cdp",
-    "devtools-protocol",
+    "antigravity-plugin",
+    "sidecar",
     "tokens",
     "token-tracker",
     "context-window"
